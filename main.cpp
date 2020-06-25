@@ -6,7 +6,7 @@ using namespace std;
 int main()
 {
 
-    DRViewer viewer(Eigen::Vector3f(0,0,10),800,600);
+    DRViewer viewer(Eigen::Vector3f(0.5,0.5,5),800,600);
     while(!viewer.ShouldExit()){
         viewer.Render();
     }

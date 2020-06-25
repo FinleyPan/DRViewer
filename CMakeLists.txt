@@ -19,5 +19,5 @@ find_package(GLFW3 REQUIRED)
 
 include_directories(${EIGEN3_INCLUDE_DIRS})
 
-add_executable(${CMAKE_PROJECT_NAME} main.cpp DRViewer.cpp glad.c)
+add_executable(${CMAKE_PROJECT_NAME} main.cpp DRViewer.cpp glad.c widgets.cpp)
 target_link_libraries(${CMAKE_PROJECT_NAME} ${GLFW3_LIBRARY} dl)
