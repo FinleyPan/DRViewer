@@ -59,10 +59,10 @@ constexpr float vertices_coordinates[] = {
 
 constexpr float vertices_frustum[] = {
    0.0f,  0.0f, 0.0f,  0.0f, 1.0f, 1.0f,
-   0.2f,  0.2f, -0.2f, 0.0f, 1.0f, 1.0f,
-  -0.2f,  0.2f, -0.2f, 0.0f, 1.0f, 1.0f,
-  -0.2f, -0.2f, -0.2f, 0.0f, 1.0f, 1.0f,
-   0.2f, -0.2f, -0.2f, 0.0f, 1.0f, 1.0f,
+   0.2f,  0.2f, 0.2f, 0.0f, 1.0f, 1.0f,
+  -0.2f,  0.2f, 0.2f, 0.0f, 1.0f, 1.0f,
+  -0.2f, -0.2f, 0.2f, 0.0f, 1.0f, 1.0f,
+   0.2f, -0.2f, 0.2f, 0.0f, 1.0f, 1.0f,
 };
 
 constexpr unsigned short indices_frustum[] = {

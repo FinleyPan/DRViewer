@@ -1,7 +1,6 @@
 #ifndef CAMERA_H
 #define CAMERA_H
 
-#include <Eigen/Core>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -31,18 +30,17 @@ const float ZOOM        =  45.0f;
 class Camera
 {
 public:
-    // Camera Attributes
-    typedef Eigen::Vector3f vec3;
-    vec3 pos_;
-    vec3 up_;
-    vec3 front_;
-    vec3 right_;
-    vec3 worldup_;
-    float yaw_, pitch_;
-    float move_speed_;
-    //sensetivity of mouse
-    float sensitivity_;
-    float zoom_;
+    // Camera Attributes    
+//    vec3 pos_;
+//    vec3 up_;
+//    vec3 front_;
+//    vec3 right_;
+//    vec3 worldup_;
+//    float yaw_, pitch_;
+//    float move_speed_;
+//    //sensetivity of mouse
+//    float sensitivity_;
+//    float zoom_;
 
     glm::vec3 Position;
     glm::vec3 Front;
@@ -56,17 +54,6 @@ public:
     float MovementSpeed;
     float MouseSensitivity;
     float Zoom;
-
-    Camera(const vec3& pos = vec3(0.0f, 0.0f, 0.0f),const vec3& up  = vec3(0.0f, 1.0f, 0.0f),
-           float yaw = YAW, float pitch = PITCH):front_(vec3(0.0f, 0.0f, -1.0f)), move_speed_(SPEED),
-           sensitivity_(SENSITIVITY), zoom_(ZOOM){
-        pos_ = pos;
-        worldup_ = up;
-        yaw_ = yaw;
-        pitch_ = pitch;
-
-        UpdateCameraVectors();
-    }
 
     // Constructor with vectors
     Camera(glm::vec3 position = glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f), float yaw = YAW, float pitch = PITCH) : Front(glm::vec3(0.0f, 0.0f, -1.0f)), MovementSpeed(SPEED), MouseSensitivity(SENSITIVITY), Zoom(ZOOM)

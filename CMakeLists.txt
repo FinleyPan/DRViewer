@@ -14,10 +14,14 @@ message(STATUS "Build Type: ${CMAKE_BUILD_TYPE}")
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/modules/")
 
-find_package(Eigen3 REQUIRED)
 find_package(GLFW3 REQUIRED)
 
-include_directories(${EIGEN3_INCLUDE_DIRS})
+add_library(viewer SHARED DRViewer.cpp glad.c widgets.cpp)
+target_link_libraries(viewer ${GLFW3_LIBRARY} dl)
 
-add_executable(${CMAKE_PROJECT_NAME} main.cpp DRViewer.cpp glad.c widgets.cpp)
-target_link_libraries(${CMAKE_PROJECT_NAME} ${GLFW3_LIBRARY} dl)
+add_executable(viewer-test main.cpp)
+target_link_libraries(viewer-test viewer)
+
+install(TARGETS viewer LIBRARY DESTINATION lib)
+install(FILES DRViewer.h DESTINATION include)
+install(FILES glad.h DESTINATION include)
