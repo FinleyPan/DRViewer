@@ -4,6 +4,7 @@
 #include "DRViewer.h"
 
 using namespace std;
+using namespace visual_utils;
 
 int main(int argc, char** argv){
 

@@ -1,5 +1,7 @@
 #include "widgets.h"
 
+namespace visual_utils {
+
 constexpr float vertices_cube[] = {
     //front face
     -0.5f, -0.5f, -0.5f, 0.0f, 0.0f, 1.0f,
@@ -916,4 +918,5 @@ constexpr unsigned short indices_grids[] = {
     417,418,418,439,439,438,438,417,
     418,419,419,440,440,439,439,418,
 };
+}
 

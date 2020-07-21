@@ -1,11 +1,24 @@
 #include "DRViewer.h"
-
+#include "glad.h"
 #include "shader_m.h"
-#include <GLFW/glfw3.h>
 #include "camera.h"
 #include "widgets.h"
+
+#include <mutex>
+#include <GLFW/glfw3.h>
 #include <glm/gtc/quaternion.hpp>
-#include <unistd.h>
+#if defined(__linux) || defined(__posix)
+  #include <unistd.h>
+  #define SLEEP(MILLI_SECONDS) usleep(MILLI_SECONDS * 1000)
+#elif defined(_WIN64) || defined(_WIN32)
+///TODO
+#elif defined(__APPLE__)
+///TODO
+#else
+  #error "unidentified operation system!"
+#endif
+
+namespace visual_utils{
 
 constexpr char const* VERTEX_SHADER_DEFAULT=
         "#version 330 core\n"
@@ -112,7 +125,7 @@ static void mouse_move_callback(GLFWwindow* window, double xpos, double ypos){
     }while(false);
 }
 
-void keyboard_callback(GLFWwindow* window, int key, int scancode, int action, int mod){
+static void keyboard_callback(GLFWwindow* window, int key, int scancode, int action, int mod){
     if(glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS){
         glm::mat4 r3 = glm::rotate(glm::mat4(1.0f), glm::radians(3.0f), glm::vec3(0,0,1.0f));
         glm::mat4 tmp = r3 * g_model;
@@ -130,247 +143,470 @@ static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset){
     g_camera.ProcessMouseScroll(yoffset, g_delta_time);
 }
 
-static void BindRenderBuffer(const GLvoid* vert_buff, GLsizeiptr vert_buff_size, GLuint VAO, GLuint VBO,
-                             GLuint* p_EBO = nullptr, const GLvoid* indices_buff = nullptr,
-                             GLsizeiptr indices_buff_size = 0,GLenum usage = GL_STATIC_DRAW,
-                             GLsizei stride = 6 * sizeof(float)){
-    glBindVertexArray(VAO);
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glBufferData(GL_ARRAY_BUFFER, vert_buff_size, vert_buff, usage);    
-    if(p_EBO != nullptr){
-        if(indices_buff == nullptr || indices_buff_size == 0){
-            std::cerr<<"ERROR: Null indices buffer or buffer size when binding EBO"<<std::endl;
-            return ;
+/*--------------class definitions---------------------*/
+class ImplDRViewerBase{
+public:
+    ImplDRViewerBase(float x,float y,float z, int width, int height, GraphicAPI api):
+        pos_cam_(x, y, z), width_(width), height_(height), traj_(0), api_(api) {}
+
+    ImplDRViewerBase(const ImplDRViewerBase& rhs): traj_(rhs.traj_), api_(rhs.api_),
+        pos_cam_(rhs.pos_cam_), width_(rhs.width_), height_(rhs.height_),
+        array_pc_(rhs.array_pc_), num_pc_(rhs.num_pc_){}
+
+    ImplDRViewerBase(ImplDRViewerBase&& rhs) noexcept: traj_(std::move(rhs.traj_)),
+        api_(rhs.api_), pos_cam_(rhs.pos_cam_), width_(rhs.width_),height_(rhs.height_),
+        array_pc_(rhs.array_pc_), num_pc_(rhs.num_pc_){}
+
+    ImplDRViewerBase& operator=(const ImplDRViewerBase& rhs) {
+        if(this != &rhs){
+            traj_ = rhs.traj_;
+            pos_cam_ = rhs.pos_cam_;
+            width_ = rhs.width_;
+            height_ = rhs.height_;
+            api_ = rhs.api_;
+            array_pc_ = rhs.array_pc_;
+            num_pc_ = rhs.num_pc_;
+            model_ = rhs.model_;
+            view_ = rhs.view_;
+            projection_ = rhs.projection_;
+            frustum_pose_ = rhs.frustum_pose_;
         }
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, *p_EBO);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices_buff_size, indices_buff, usage);
+        return *this;
     }
 
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)0);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, (void*)(3*sizeof(float)));
-    glEnableVertexAttribArray(1);
-}
-
-static void DrawCube(GLuint VAO, GLuint VBO){
-    BindRenderBuffer(vertices_cube, sizeof(vertices_cube), VAO, VBO);
-    glDrawArrays(GL_TRIANGLES, 0, 36);
-}
-
-static void DrawCoordinateSystem(GLuint VAO, GLuint VBO, const Shader* shader = nullptr,
-                                 GLfloat line_width = 1.0f){
-    BindRenderBuffer(vertices_coordinates, sizeof(vertices_coordinates), VAO, VBO);
-    if(shader != nullptr){
-        shader->setMat4("model", g_model);
+    ImplDRViewerBase& operator=(ImplDRViewerBase&& rhs) noexcept{
+        if(this != &rhs){
+            traj_ = std::move(rhs.traj_);
+            pos_cam_ = rhs.pos_cam_;
+            width_ = rhs.width_;
+            height_ = rhs.height_;
+            api_ = rhs.api_;
+            array_pc_ = rhs.array_pc_;
+            num_pc_ = rhs.num_pc_;
+            model_ = rhs.model_;
+            view_ = rhs.view_;
+            projection_ = rhs.projection_;
+            frustum_pose_ = rhs.frustum_pose_;
+        }
+        return *this;
     }
-    glLineWidth(line_width);
-    glDrawArrays(GL_LINES, 0, 6);
-    glLineWidth(1.0f);
+
+    virtual ~ImplDRViewerBase(){};
+    virtual bool ShouldExit() const = 0;
+    virtual void Render() = 0;
+
+    virtual void Wait(unsigned int milliseconds){
+        SLEEP(milliseconds);
+    }
+
+    GraphicAPI APIType() const {return api_;}
+    void BindPointCloudData(const void* data, size_t num_vertices){
+        array_pc_ = data;
+        num_pc_ = num_vertices;
+    }
+
+    void AddCameraPose(glm::quat& rotation, const glm::vec3& position,
+                       const glm::vec3& color){
+        frustum_pose_ = glm::mat4(rotation);
+        frustum_pose_[3] = glm::vec4(position, 1.0f);
+        traj_.emplace_back(position);
+        traj_.emplace_back(color);
+    }
+
+protected:
+    std::vector<glm::vec3> traj_;
+    glm::mat4 model_ = glm::mat4(1.0f);
+    glm::mat4 view_ = glm::mat4(1.0f);
+    glm::mat4 projection_ = glm::mat4(1.0f);
+    glm::mat4 frustum_pose_ = glm::mat4(1.0f);
+    const void* array_pc_ = nullptr;
+    size_t num_pc_ = 0;
+    GraphicAPI api_;
+    glm::vec3 pos_cam_;
+    int width_, height_;
+};
+
+class ImplDRViewerOGL : public ImplDRViewerBase{
+public:
+    friend void framebuffer_size_callback(GLFWwindow*, int, int);
+    friend void mouse_move_callback(GLFWwindow*, double, double);
+    friend void keyboard_callback(GLFWwindow*, int, int, int, int);
+    friend void scroll_callback(GLFWwindow*, double, double);
+
+public:
+    ImplDRViewerOGL(float x,float y,float z, int width, int height, const char* vert_shader_src,
+                    const char* frag_shader_src, GraphicAPI api) : ImplDRViewerBase(x, y, z, width,
+        height, api), camera_(pos_cam_), ref_count_(new size_t(1)) {
+
+        glfwInit();
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+#ifdef __APPLE__
+        glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE); // uncomment this statement to fix compilation on OS X
+#endif
+        window_ = glfwCreateWindow(width_, height_, "DRViewer", nullptr, nullptr);
+        if (window_ == nullptr) {
+            std::cerr << "Failed to create GLFW window" << std::endl;
+            glfwDestroyWindow(window_);
+            exit(-1);
+        }
+
+        glfwMakeContextCurrent(window_);
+        glfwSetFramebufferSizeCallback(window_, framebuffer_size_callback);
+        glfwSetKeyCallback(window_, keyboard_callback);
+        glfwSetCursorPosCallback(window_, mouse_move_callback);
+        glfwSetScrollCallback(window_, scroll_callback);
+        glfwSetInputMode(window_, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+
+        if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)){
+            std::cerr << "Failed to initialize GLAD" << std::endl;
+            exit(-1);
+        }
+        shader_ = new Shader(std::string(vert_shader_src), frag_shader_src);
+        glGenVertexArrays(1, &vao_);
+        glGenBuffers(1, &vbo_);
+        glGenBuffers(1, &ebo_);
+    }
+
+    ImplDRViewerOGL(const ImplDRViewerOGL& rhs): ImplDRViewerBase(rhs),
+        shader_(rhs.shader_), window_(rhs.window_){
+        TrivialAssign(rhs);
+        ++(*ref_count_);
+    }
+
+    ImplDRViewerOGL(ImplDRViewerOGL&& rhs) noexcept: ImplDRViewerBase(std::move(rhs)),
+        shader_(rhs.shader_), window_(rhs.window_){
+        TrivialAssign(rhs);
+
+        rhs.shader_ = nullptr;
+        rhs.window_ = nullptr;
+        rhs.ref_count_ = nullptr;
+    }
+
+    ImplDRViewerOGL& operator=(const ImplDRViewerOGL& rhs){
+        if(this != &rhs){
+            Destruct();
+            TrivialAssign(rhs);
+
+            ImplDRViewerBase::operator=(rhs);
+            shader_ = rhs.shader_;
+            window_ = rhs.window_;
+            ++(*ref_count_);
+        }
+        return *this;
+    }
+
+    ImplDRViewerOGL& operator=(ImplDRViewerOGL&& rhs){
+        if(this != &rhs){
+            Destruct();
+            TrivialAssign(rhs);
+
+            ImplDRViewerBase::operator=(std::move(rhs));
+            shader_ = rhs.shader_;
+            window_ = rhs.window_;
+
+            rhs.shader_ = nullptr;
+            rhs.window_ = nullptr;
+            rhs.ref_count_ = nullptr;
+        }
+        return *this;
+    }
+
+    virtual ~ImplDRViewerOGL(){
+        Destruct();
+    }
+
+    virtual bool ShouldExit() const override{
+        if(glfwGetKey(window_, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+            glfwSetWindowShouldClose(window_, true);
+        return glfwWindowShouldClose(window_);
+    }
+
+    void Render() override{
+        //support multi-threads
+        std::lock_guard<std::mutex> lck(mtx_);
+
+        float current_time = glfwGetTime();
+        delta_time_ = current_time - last_time_;
+        last_time_ = current_time;
+
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glEnable(GL_DEPTH_TEST);
+        glEnable(GL_LINE_SMOOTH);
+        glEnable(GL_MULTISAMPLE);
+
+        shader_->use();
+        view_ = camera_.GetViewMatrix();
+        projection_ = glm::perspective(glm::radians(camera_.Zoom),
+                           (float)width_ / height_, 0.1f, 100.0f);
+        shader_->setMat4("view", view_);
+        shader_->setMat4("projection", projection_);
+
+//        DrawCube();
+        DrawCoordinateSystem(4.0f);
+        DrawGrids();
+        DrawFrustum();
+        DrawTrajectory();
+        DrawPointCloud();
+
+        GLenum err;
+        while ((err = glGetError()) != GL_NO_ERROR) {
+            printf("OpenGL error: %u", err);
+            exit(-1);
+        }
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_LINE_SMOOTH);
+        glDisable(GL_MULTISAMPLE);
+
+        glfwSwapBuffers(window_);
+        glfwPollEvents();
+    }
+
+private:
+    Shader* shader_;
+    GLFWwindow* window_;
+    std::mutex mtx_;
+    float lastX_ = 0.0f, lastY_ = 0.0f;
+    float last_time_ = 0.0f, delta_time_ = 0.0f;
+    bool clr_left_mouse = true, clr_right_mouse = true;
+    Camera camera_ = Camera(glm::vec3(0.0f, 0.0f, 0.0f));
+    size_t* ref_count_ = nullptr;
+    GLuint vao_, vbo_, ebo_;
+
+private:
+    void TrivialAssign(const ImplDRViewerOGL& rhs) noexcept{
+        lastX_ = rhs.lastX_;
+        lastY_ = rhs.lastY_;
+        vao_ = rhs.vao_;
+        vbo_ = rhs.vbo_;
+        ebo_ = rhs.ebo_;
+        last_time_ = rhs.last_time_;
+        delta_time_ = rhs.delta_time_;
+        clr_left_mouse = rhs.clr_left_mouse;
+        clr_right_mouse = rhs.clr_right_mouse;
+        camera_ = rhs.camera_;
+        ref_count_ = rhs.ref_count_;
+    }
+
+    void Destruct(){
+        if(ref_count_ != nullptr){
+            --(*ref_count_);
+            if(*ref_count_ == 0){
+                delete shader_;
+                delete ref_count_;
+                ref_count_ = nullptr;
+
+                glDeleteVertexArrays(1, &vao_);
+                glDeleteBuffers(1, &vbo_);
+                glDeleteBuffers(1, &ebo_);
+                glfwDestroyWindow(window_);
+            }
+        }
+    }
+
+    void BindRenderBuffer(const GLvoid* vert_buff, GLsizeiptr vert_buff_size, bool use_ebo = false,
+                          const GLvoid* indices_buff = nullptr, GLsizeiptr indices_buff_size = 0,
+                          GLenum usage = GL_STATIC_DRAW, GLsizei stride = 6 * sizeof(float),
+                          size_t pos_offset = 0, size_t color_offset = 3 * sizeof(float)){
+        glBindVertexArray(vao_);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+        glBufferData(GL_ARRAY_BUFFER, vert_buff_size, vert_buff, usage);
+        if(use_ebo){
+            if(indices_buff == nullptr || indices_buff_size == 0){
+                std::cerr<<"ERROR: Null indices buffer or buffer size when binding EBO"<<std::endl;
+                return ;
+            }
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo_);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices_buff_size, indices_buff, usage);
+        }
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)pos_offset);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, (void*)color_offset);
+        glEnableVertexAttribArray(1);
+    }
+
+    void DrawCube(){
+        BindRenderBuffer(vertices_cube, sizeof(vertices_cube));
+        glDrawArrays(GL_TRIANGLES, 0, 36);
+    }
+
+    void DrawCoordinateSystem(GLfloat line_width = 1.0f){
+        BindRenderBuffer(vertices_coordinates, sizeof(vertices_coordinates));
+        shader_->setMat4("model", model_);
+        glLineWidth(line_width);
+        glDrawArrays(GL_LINES, 0, 6);
+        glLineWidth(1.0f);
+    }
+
+    void DrawFrustum(GLfloat line_width = 1.0f){
+        BindRenderBuffer(vertices_frustum, sizeof(vertices_frustum), true,
+                         indices_frustum , sizeof(indices_frustum));
+        shader_->setMat4("model", model_ * frustum_pose_);
+        glLineWidth(line_width);
+        glDrawElements(GL_LINES, 16, GL_UNSIGNED_SHORT, 0);
+        glLineWidth(1.0f);
+    }
+
+    void DrawGrids(GLfloat line_width = 1.0f){
+        BindRenderBuffer(vertices_grids, sizeof(vertices_grids), true,
+                         indices_grids , sizeof(indices_grids));
+        shader_->setMat4("model", model_);
+        glLineWidth(line_width);
+        glDrawElements(GL_LINES, sizeof(indices_grids) / sizeof(unsigned short),
+                       GL_UNSIGNED_SHORT, 0);
+        glLineWidth(1.0f);
+    }
+
+    void DrawTrajectory(GLfloat line_width = 1.0f){
+       BindRenderBuffer(traj_.data(), traj_.size() * sizeof(glm::vec3));
+       shader_->setMat4("model", model_);
+       glLineWidth(line_width);
+       glDrawArrays(GL_LINE_STRIP, 0, traj_.size() / 2);// traj_.size() * 3 / 6
+       glLineWidth(1.0f);
+    }
+
+    void DrawPointCloud(GLfloat point_size = 1.0f){
+        BindRenderBuffer(array_pc_, num_pc_ * 6 * sizeof(float));
+        shader_->setMat4("model", model_);
+        glPointSize(point_size);
+        glDrawArrays(GL_POINTS, 0, num_pc_);
+        glPointSize(1.0f);
+    }
+
+};
+
+namespace  {
+
 }
 
-static void DrawFrustum(GLuint VAO, GLuint VBO, GLuint EBO, const Shader* shader = nullptr,
-                        GLfloat line_width = 1.0f){
-    BindRenderBuffer(vertices_frustum, sizeof(vertices_frustum), VAO, VBO,
-                     &EBO, indices_frustum, sizeof(indices_frustum));
-    if(shader != nullptr){
-        shader->setMat4("model", g_model * g_frustum_pose);
-    }
-    glLineWidth(line_width);
-    glDrawElements(GL_LINES, 16, GL_UNSIGNED_SHORT, 0);
-    glLineWidth(1.0f);    
-}
+class ImplDRViewerVLK : public ImplDRViewerBase{
+public:
+    ImplDRViewerVLK(float x,float y,float z, int width, int height, const char* vert_shader_src,
+                    const char* frag_shader_src, GraphicAPI api) :
+        ImplDRViewerBase(x, y, z, width, height, api) {}
+    virtual bool ShouldExit() const override { return true;}
+    void Render() override{}
 
-static void DrawGrids(GLuint VAO, GLuint VBO, GLuint EBO, const Shader* shader = nullptr,
-                      GLfloat line_width = 1.0f){
-    BindRenderBuffer(vertices_grids, sizeof(vertices_grids), VAO, VBO,
-                     &EBO, indices_grids, sizeof(indices_grids));
-    if(shader != nullptr){
-        shader->setMat4("model", g_model);
-    }
-    glLineWidth(line_width);
-    glDrawElements(GL_LINES, sizeof(indices_grids) / sizeof(unsigned short), GL_UNSIGNED_SHORT, 0);
-    glLineWidth(1.0f);
-}
+    virtual ~ImplDRViewerVLK(){}
+    ///TODO for Vulkan API
+};
 
-static void DrawTrajectory(GLuint VAO, GLuint VBO, const Shader* shader = nullptr,
-                           GLfloat line_width = 1.0f){
-    BindRenderBuffer(g_traj.data(), g_traj.size() * sizeof(glm::vec3), VAO, VBO,
-                     nullptr, nullptr, 0, GL_STREAM_DRAW);
-    if(shader != nullptr){
-        shader->setMat4("model", g_model);
-    }
-    glLineWidth(line_width);
-    glDrawArrays(GL_LINE_STRIP, 0, g_traj.size() / 2); // g_traj.size() * 3 / 6
-    glLineWidth(1.0f);
-}
+class ImplDRViewerMTL : public ImplDRViewerBase{
+public:
+    ImplDRViewerMTL(float x,float y,float z, int width, int height, const char* vert_shader_src,
+                    const char* frag_shader_src,  GraphicAPI api) :
+        ImplDRViewerBase(x, y, z, width, height, api) {}
+    virtual bool ShouldExit() const override { return true;}
+    void Render() override{}
 
-static void DrawPointCloud(GLuint VAO, GLuint VBO, const Shader* shader = nullptr,
-                           GLfloat point_size = 1.0f){
-    BindRenderBuffer(g_array_pc, g_num_pc * 6 * sizeof(float), VAO, VBO,
-                     nullptr, nullptr, 0, GL_STATIC_DRAW);
-    if(shader != nullptr){
-        shader->setMat4("model", g_model);
+    virtual ~ImplDRViewerMTL(){}
+    ///TODO for Metal API
+};
+
+
+class DRViewer::Impl{
+public:
+    Impl(float cam_x,float cam_y,float cam_z, int width, int height,
+         const char* vert_shader_src, const char* frag_shader_src,
+         GraphicAPI api) : impl_(nullptr){
+        switch (api) {
+            case GraphicAPI::OPENGL:
+                impl_.reset(new ImplDRViewerOGL(cam_x, cam_y, cam_z, width, height,
+                            vert_shader_src, frag_shader_src, api)); break;
+            case GraphicAPI::VULKAN:
+                impl_.reset(new ImplDRViewerVLK(cam_x, cam_y, cam_z, width, height,
+                            vert_shader_src, frag_shader_src, api)); break;
+            case GraphicAPI::METAL:
+                impl_.reset(new ImplDRViewerMTL(cam_x, cam_y, cam_z, width, height,
+                            vert_shader_src, frag_shader_src, api)); break;
+        }
     }
-    glPointSize(point_size);
-    glDrawArrays(GL_POINTS, 0, g_num_pc);
-    glPointSize(1.0f);
-}
+
+    Impl(const Impl& rhs) : impl_(nullptr){
+        switch(rhs.impl_->APIType()) {
+            case GraphicAPI::OPENGL:
+                impl_.reset(new ImplDRViewerOGL(*static_cast<ImplDRViewerOGL*>(
+                                                rhs.impl_.get()))); break;
+            case GraphicAPI::VULKAN:
+                impl_.reset(new ImplDRViewerVLK(*static_cast<ImplDRViewerVLK*>(
+                                                rhs.impl_.get()))); break;
+            case GraphicAPI::METAL:
+                impl_.reset(new ImplDRViewerMTL(*static_cast<ImplDRViewerMTL*>(
+                                                rhs.impl_.get()))); break;
+        }
+    }
+
+    Impl& operator=(const Impl& rhs){
+        if(this != &rhs){
+            *impl_ = *rhs.impl_;
+        }
+        return *this;
+    }
+
+    Impl(Impl&&) noexcept = default;
+    Impl& operator=(Impl&&) = default;
+    ~Impl() = default;
+
+    bool ShouldExit() const {return impl_->ShouldExit();}
+    void Render() {impl_->Render();}
+    void BindPoinCloudData(const void* data, size_t num_vertices){
+        impl_->BindPointCloudData(data, num_vertices);
+    }
+    void AddCameraPose(glm::quat& rotation, const glm::vec3& position,
+                       const glm::vec3& color=glm::vec3(1.0f,1.0f,1.0f)){
+        impl_->AddCameraPose(rotation, position, color);
+    }
+    void Wait(unsigned int milliseconds){
+        impl_->Wait(milliseconds);
+    }
+
+private:
+    std::unique_ptr<ImplDRViewerBase> impl_;
+};
 
 
 DRViewer::DRViewer(float cam_x,float cam_y,float cam_z, int width, int height,
-                   const char* vert_shader_src,const char* frag_shader_src){    
-    g_camera = Camera(glm::vec3(cam_x,cam_y,cam_z));
-    g_width = width;
-    g_height = height;
+                   const char* vert_shader_src, const char* frag_shader_src,
+                   GraphicAPI api) : impl_(new Impl(cam_x, cam_y, cam_z, width,
+            height, vert_shader_src, frag_shader_src, api)) {}
 
-    glfwInit();
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-#ifdef __APPLE__
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE); // uncomment this statement to fix compilation on OS X
-#endif
-    window_ = glfwCreateWindow(width, height, "DRViewer", nullptr, nullptr);
-    if (window_ == nullptr) {
-        std::cout << "Failed to create GLFW window" << std::endl;
-        glfwTerminate();
-        exit(-1);
+DRViewer::DRViewer(const DRViewer& rhs) : impl_(new Impl(*rhs.impl_)){}
+
+DRViewer& DRViewer::operator=(const DRViewer& rhs){
+    if(this != &rhs){
+        *impl_ = *rhs.impl_;
     }
-
-    glfwMakeContextCurrent(window_);
-    glfwSetFramebufferSizeCallback(window_, framebuffer_size_callback);
-    glfwSetKeyCallback(window_, keyboard_callback);
-    glfwSetCursorPosCallback(window_, mouse_move_callback);
-    glfwSetScrollCallback(window_, scroll_callback);
-    glfwSetInputMode(window_, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-
-    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)){
-        std::cout << "Failed to initialize GLAD" << std::endl;
-        exit(-1);
-    }
-    shader_ = new Shader(std::string(vert_shader_src), frag_shader_src);
-
-    glEnable(GL_DEPTH_TEST);
-    glEnable(GL_LINE_SMOOTH);
-    glEnable(GL_MULTISAMPLE);
-
-    //create and bind buffer for drawing grids widget
-    glGenVertexArrays(1, &g_vao_grids);
-    glGenBuffers(1, &g_vbo_grids);
-    glGenBuffers(1, &g_ebo_grids);
-
-    //create and bind buffer for drawing frustum widget
-    glGenVertexArrays(1, &g_vao_frustum);
-    glGenBuffers(1, &g_vbo_frustum);
-    glGenBuffers(1, &g_ebo_frustum);
-
-    //create and bind buffer for drawing coordinates system widget
-    glGenVertexArrays(1, &g_vao_coord);
-    glGenBuffers(1, &g_vbo_coord);
-
-    //create and bind buffer for drawing trajectory widget
-    glGenVertexArrays(1, &g_vao_traj);
-    glGenBuffers(1, &g_vbo_traj);
-
-    //create and bind buffer for drawing point cloud
-    glGenVertexArrays(1, &g_vao_pc);
-    glGenBuffers(1, &g_vbo_pc);
-
-    //create and bind buffer for drawing util(e.g. cube) widget
-    glGenVertexArrays(1, &g_vao_util);
-    glGenBuffers(1, &g_vbo_util);
+    return *this;
 }
 
-DRViewer::~DRViewer(){
-    delete shader_;
+DRViewer::DRViewer(DRViewer&&) noexcept = default;
+DRViewer& DRViewer::operator=(DRViewer&&) = default;
+DRViewer::~DRViewer() = default;
 
-    glDeleteVertexArrays(1, &g_vao_grids);
-    glDeleteBuffers(1, &g_vbo_grids);
-    glDeleteBuffers(1, &g_ebo_grids);
-
-    glDeleteVertexArrays(1, &g_vao_frustum);
-    glDeleteBuffers(1, &g_vbo_frustum);
-    glDeleteBuffers(1, &g_ebo_frustum);
-
-    glDeleteVertexArrays(1, &g_vao_coord);
-    glDeleteBuffers(1, &g_vbo_coord);
-
-    glDeleteVertexArrays(1, &g_vao_traj);
-    glDeleteBuffers(1, &g_vbo_traj);
-
-    glDeleteVertexArrays(1, &g_vao_pc);
-    glDeleteBuffers(1, &g_vbo_pc);
-
-    glDeleteVertexArrays(1, &g_vao_util);
-    glDeleteBuffers(1, &g_vbo_util);
-
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_LINE_SMOOTH);
-    glDisable(GL_MULTISAMPLE);
-    glfwTerminate();
-}
 
 void DRViewer::BindPoinCloudData(const void *data, size_t num_vertices){
-    g_array_pc = data;
-    g_num_pc = num_vertices;
+    impl_->BindPoinCloudData(data, num_vertices);
 }
 
-void DRViewer::AddCameraPose(float qw, float qx, float qy, float qz, float x, float y, float z){
-    glm::quat q(qw, qx, qy, qz);
-    g_frustum_pose = glm::mat4(q);
-    g_frustum_pose[3] = glm::vec4(x, y, z, 1.0f);
-    g_traj.push_back(glm::vec3(x,y,z));
-    g_traj.push_back(glm::vec3(1.0f,1.0f,1.0f));
-//    static bool first_traj = true;
-//    if(first_traj){
-//        g_traj_origin = glm::vec3(x,y,z);
-//        first_traj = false;
-//    }
-//    //set trajectory's start point to the orginal point of world frame
-//     g_frustum_pose[3] = glm::vec4(x - g_traj_origin[0], y - g_traj_origin[1],
-//                                   z - g_traj_origin[2], 1.0f);
-//    g_traj.rbegin()[1] -= g_traj_origin;
+void DRViewer::AddCameraPose(float qw, float qx, float qy, float qz,
+                             float  x, float  y, float z){
+    glm::quat r(qw, qx, qy, qz);
+    glm::vec3 t(x,y,z);
+    impl_->AddCameraPose(r, t);
 }
 
 void DRViewer::Render(){
-    float current_time = glfwGetTime();
-    g_delta_time = current_time - g_last_time;
-    g_last_time = current_time;
-
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-    shader_->use();
-
-    g_view = g_camera.GetViewMatrix();
-    g_projection = glm::perspective(glm::radians(g_camera.Zoom), (float)g_width/g_height, 0.1f, 100.0f);
-
-    shader_->setMat4("view", g_view);
-    shader_->setMat4("projection", g_projection);
-
-//    DrawCube(g_vao_util, g_vbo_util);
-    DrawCoordinateSystem(g_vao_coord, g_vbo_coord, shader_, 4.0f);
-    DrawGrids(g_vao_grids, g_vbo_grids, g_ebo_grids, shader_);
-    DrawFrustum(g_vao_frustum, g_vbo_frustum, g_ebo_frustum, shader_);
-    DrawTrajectory(g_vao_traj,g_vbo_traj, shader_);
-    DrawPointCloud(g_vao_pc, g_vbo_pc, shader_);
-
-    GLenum err;
-    while ((err = glGetError()) != GL_NO_ERROR) {
-        printf("OpenGL error: %u", err);
-        exit(-1);
-    }
-
-    glfwSwapBuffers(window_);
-    glfwPollEvents();
+    impl_->Render();
 }
 
 bool DRViewer::ShouldExit() const{
-    if(glfwGetKey(window_, GLFW_KEY_ESCAPE) == GLFW_PRESS)
-        glfwSetWindowShouldClose(window_, true);       
-    return glfwWindowShouldClose(window_);
+    return impl_->ShouldExit();
 }
 
 void DRViewer::Wait(unsigned int milliseconds){
-    usleep(1000 * milliseconds);
+    impl_->Wait(milliseconds);
+}
+
 }
