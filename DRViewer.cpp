@@ -198,6 +198,7 @@ public:
         rhs.shader_ = nullptr;
         rhs.window_ = nullptr;
         rhs.ref_count_ = nullptr;
+        rhs.callback_helper_ = nullptr;
     }
 
     ImplDRViewerOGL& operator=(const ImplDRViewerOGL& rhs){
@@ -225,6 +226,7 @@ public:
             rhs.shader_ = nullptr;
             rhs.window_ = nullptr;
             rhs.ref_count_ = nullptr;
+            rhs.callback_helper_ = nullptr;
         }
         return *this;
     }
@@ -318,6 +320,8 @@ private:
         clr_right_mouse_ = rhs.clr_right_mouse_;
         camera_ = rhs.camera_;
         ref_count_ = rhs.ref_count_;
+        callback_helper_ = rhs.callback_helper_;
+        callback_helper_->handle_ = this;
     }
 
     void Destruct(){

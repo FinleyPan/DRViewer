@@ -17,7 +17,7 @@ int main(int argc, char** argv){
         printf("%s does not exist\n", argv[1]);
         return -1;
     }
-    DRViewer viewer(0.5,0.5,8,800,600);
+    DRViewer viewer(0.5,0.5,8,800,600);   
     while(!viewer.ShouldExit()){
         std::string line, tmp;
         if(getline(fin, line)){

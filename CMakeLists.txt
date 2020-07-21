@@ -24,4 +24,3 @@ target_link_libraries(viewer-test viewer)
 
 install(TARGETS viewer LIBRARY DESTINATION lib)
 install(FILES DRViewer.h DESTINATION include)
-install(FILES glad.h DESTINATION include)
