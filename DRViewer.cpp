@@ -43,106 +43,6 @@ constexpr char const* FRAGMENT_SHADER_DEFAULT=
         "FragColor = vec4(Color,1.0);\n"
         "}\n";
 
-static float g_lastX = 0.0f;
-static float g_lastY = 0.0f;
-static float g_delta_time = 0.0f;
-static float g_last_time = 0.0f;
-static bool g_clr_left_mouse = true;
-static bool g_clr_right_mouse = true;
-static glm::mat4 g_model = glm::mat4(1.0f);
-static glm::mat4 g_view = glm::mat4(1.0f);
-static glm::mat4 g_projection = glm::mat4(1.0f);
-static glm::mat4 g_frustum_pose = glm::mat4(1.0f);
-static Camera g_camera = Camera(glm::vec3(0.0f, 0.0f, 0.0f));
-static int g_width = 0, g_height = 0;
-
-static GLuint g_vao_coord, g_vbo_coord;
-static GLuint g_vao_traj, g_vbo_traj;
-static GLuint g_vao_pc, g_vbo_pc;
-static GLuint g_vao_util, g_vbo_util;
-static GLuint g_vao_grids, g_vbo_grids, g_ebo_grids;
-static GLuint g_vao_frustum, g_vbo_frustum, g_ebo_frustum;
-
-static glm::vec3 g_traj_origin = glm::vec3(0.0f, 0.0f, 0.0f);
-static std::vector<glm::vec3> g_traj = std::vector<glm::vec3>(0);
-static const void* g_array_pc = nullptr;
-static size_t g_num_pc = 0;
-
-static void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
-    glViewport(0, 0, width, height);
-    g_width = width;
-    g_height = height;
-}
-
-static void mouse_move_callback(GLFWwindow* window, double xpos, double ypos){
-    do{
-        if(glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_RELEASE) {
-            g_clr_left_mouse = true;
-            break;
-        }
-        //move camera when left mouse key pressed
-        if(g_clr_left_mouse){
-            g_lastX = xpos;
-            g_lastY = ypos;
-            g_clr_left_mouse = false;
-        }
-
-        float xoffset = xpos - g_lastX;
-        float yoffset = g_lastY - ypos;
-        g_lastX = xpos;
-        g_lastY = ypos;
-
-        float speed = std::fabs(g_camera.Position[2]) * 0.00125f;
-        g_model[3] = g_model[3] + glm::vec4(glm::vec3(speed * xoffset, 0, 0),0)
-                                + glm::vec4(glm::vec3(0, speed * yoffset, 0),0);
-        return ;
-    }while(false);
-
-    do{
-        if(glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_RELEASE) {
-            g_clr_right_mouse = true;
-            break;
-        }
-        //rotate camera when right mouse key pressed
-        if(g_clr_right_mouse){
-            g_lastX = xpos;
-            g_lastY = ypos;
-            g_clr_right_mouse = false;
-        }
-
-        float xoffset = xpos - g_lastX;
-        float yoffset = g_lastY - ypos;
-        g_lastX = xpos;
-        g_lastY = ypos;
-
-        glm::mat4 r1 = glm::rotate(glm::mat4(1.0f), glm::radians(-yoffset * 0.5f), glm::vec3(1.0f,0.0f,0.0f));
-        glm::mat4 r2 = glm::rotate(glm::mat4(1.0f), glm::radians( xoffset * 0.5f), glm::vec3(0.0f,1.0f,0.0f));
-//        glm::mat4 r3 = glm::rotate(glm::mat4(), glm::radians(speed), glm::vec3(0,0,1.0f));
-        glm::mat4 tmp = /*r3 **/ r2 * r1 * g_model;
-        for(int i=0; i<3; i++)
-            g_model[i] = tmp[i];
-        return ;
-    }while(false);
-}
-
-static void keyboard_callback(GLFWwindow* window, int key, int scancode, int action, int mod){
-    if(glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS){
-        glm::mat4 r3 = glm::rotate(glm::mat4(1.0f), glm::radians(3.0f), glm::vec3(0,0,1.0f));
-        glm::mat4 tmp = r3 * g_model;
-        for(int i=0; i<3; i++)
-            g_model[i] = tmp[i];
-    }else if(glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS){
-        glm::mat4 r3 = glm::rotate(glm::mat4(1.0f), glm::radians(-3.0f), glm::vec3(0,0,1.0f));
-        glm::mat4 tmp = r3 * g_model;
-        for(int i=0; i<3; i++)
-            g_model[i] = tmp[i];
-    }
-}
-
-static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset){
-    g_camera.ProcessMouseScroll(yoffset, g_delta_time);
-}
-
 /*--------------class definitions---------------------*/
 class ImplDRViewerBase{
 public:
@@ -228,12 +128,6 @@ protected:
 
 class ImplDRViewerOGL : public ImplDRViewerBase{
 public:
-    friend void framebuffer_size_callback(GLFWwindow*, int, int);
-    friend void mouse_move_callback(GLFWwindow*, double, double);
-    friend void keyboard_callback(GLFWwindow*, int, int, int, int);
-    friend void scroll_callback(GLFWwindow*, double, double);
-
-public:
     ImplDRViewerOGL(float x,float y,float z, int width, int height, const char* vert_shader_src,
                     const char* frag_shader_src, GraphicAPI api) : ImplDRViewerBase(x, y, z, width,
         height, api), camera_(pos_cam_), ref_count_(new size_t(1)) {
@@ -251,6 +145,28 @@ public:
             glfwDestroyWindow(window_);
             exit(-1);
         }
+        callback_helper_ = new CallbackHelper(this);
+        glfwSetWindowUserPointer(window_, callback_helper_);
+
+        auto framebuffer_size_callback = [](GLFWwindow* win, int w, int h){
+            auto helper = static_cast<CallbackHelper*>(glfwGetWindowUserPointer(win));
+            helper->WindowSizeCallback(w,h);
+        };
+
+        auto scroll_callback = [](GLFWwindow* win, double xoff, double yoff){
+            auto helper = static_cast<CallbackHelper*>(glfwGetWindowUserPointer(win));
+            helper->ScrollCallback(xoff, yoff);
+        };
+
+        auto mouse_move_callback = [](GLFWwindow* win, double xpos, double ypos){
+            auto helper = static_cast<CallbackHelper*>(glfwGetWindowUserPointer(win));
+            helper->MouseMoveCallback(win, xpos, ypos);
+        };
+
+        auto keyboard_callback = [](GLFWwindow* win, int key, int scancode, int action, int mod){
+            auto helper = static_cast<CallbackHelper*>(glfwGetWindowUserPointer(win));
+            helper->KeyboardCallback(win, key, scancode, action, mod);
+        };
 
         glfwMakeContextCurrent(window_);
         glfwSetFramebufferSizeCallback(window_, framebuffer_size_callback);
@@ -365,12 +281,26 @@ public:
     }
 
 private:
+    class CallbackHelper{
+    public:
+        void WindowSizeCallback(int, int);
+        void MouseMoveCallback(GLFWwindow*, double, double);
+        void KeyboardCallback(GLFWwindow*, int, int, int, int);
+        void ScrollCallback(double, double);
+
+        ImplDRViewerOGL* handle_;
+
+        CallbackHelper(ImplDRViewerOGL* handle) : handle_(handle){}
+    };
+
+private:
     Shader* shader_;
     GLFWwindow* window_;
+    CallbackHelper* callback_helper_;
     std::mutex mtx_;
     float lastX_ = 0.0f, lastY_ = 0.0f;
     float last_time_ = 0.0f, delta_time_ = 0.0f;
-    bool clr_left_mouse = true, clr_right_mouse = true;
+    bool clr_left_mouse_ = true, clr_right_mouse_ = true;
     Camera camera_ = Camera(glm::vec3(0.0f, 0.0f, 0.0f));
     size_t* ref_count_ = nullptr;
     GLuint vao_, vbo_, ebo_;
@@ -384,8 +314,8 @@ private:
         ebo_ = rhs.ebo_;
         last_time_ = rhs.last_time_;
         delta_time_ = rhs.delta_time_;
-        clr_left_mouse = rhs.clr_left_mouse;
-        clr_right_mouse = rhs.clr_right_mouse;
+        clr_left_mouse_ = rhs.clr_left_mouse_;
+        clr_right_mouse_ = rhs.clr_right_mouse_;
         camera_ = rhs.camera_;
         ref_count_ = rhs.ref_count_;
     }
@@ -395,6 +325,7 @@ private:
             --(*ref_count_);
             if(*ref_count_ == 0){
                 delete shader_;
+                delete callback_helper_;
                 delete ref_count_;
                 ref_count_ = nullptr;
 
@@ -477,8 +408,79 @@ private:
 
 };
 
-namespace  {
+void ImplDRViewerOGL::CallbackHelper::WindowSizeCallback(int w, int h){
+    glViewport(0, 0, w, h);
+    handle_->width_ = w;
+    handle_->height_ = h;
+}
 
+void ImplDRViewerOGL::CallbackHelper::ScrollCallback(double xoff, double yoff){
+    handle_->camera_.ProcessMouseScroll(yoff, handle_->delta_time_);
+}
+
+void ImplDRViewerOGL::CallbackHelper::MouseMoveCallback(GLFWwindow* window, double xpos, double ypos){
+    do{
+        if(glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_RELEASE) {
+            handle_->clr_left_mouse_ = true;
+            break;
+        }
+        //move camera when left mouse key pressed
+        if(handle_->clr_left_mouse_){
+            handle_->lastX_ = xpos;
+            handle_->lastY_ = ypos;
+            handle_->clr_left_mouse_ = false;
+        }
+
+        float xoffset = xpos - handle_->lastX_;
+        float yoffset = handle_->lastY_ - ypos;
+        handle_->lastX_ = xpos;
+        handle_->lastY_ = ypos;
+
+        float speed = std::fabs(handle_->camera_.Position[2]) * 0.00125f;
+        handle_->model_[3] = handle_->model_[3] + glm::vec4(glm::vec3(speed * xoffset, 0, 0),0)
+                                + glm::vec4(glm::vec3(0, speed * yoffset, 0),0);
+        return ;
+    }while(false);
+
+    do{
+        if(glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_RELEASE) {
+            handle_->clr_right_mouse_ = true;
+            break;
+        }
+        //rotate camera when right mouse key pressed
+        if(handle_->clr_right_mouse_){
+            handle_->lastX_ = xpos;
+            handle_->lastY_ = ypos;
+            handle_->clr_right_mouse_ = false;
+        }
+
+        float xoffset = xpos - handle_->lastX_;
+        float yoffset = handle_->lastY_ - ypos;
+        handle_->lastX_ = xpos;
+        handle_->lastY_ = ypos;
+
+        glm::mat4 r1 = glm::rotate(glm::mat4(1.0f), glm::radians(-yoffset * 0.5f), glm::vec3(1.0f,0.0f,0.0f));
+        glm::mat4 r2 = glm::rotate(glm::mat4(1.0f), glm::radians( xoffset * 0.5f), glm::vec3(0.0f,1.0f,0.0f));
+//        glm::mat4 r3 = glm::rotate(glm::mat4(), glm::radians(speed), glm::vec3(0,0,1.0f));
+        glm::mat4 tmp = /*r3 **/ r2 * r1 * handle_->model_;
+        for(int i=0; i<3; i++)
+            handle_->model_[i] = tmp[i];
+        return ;
+    }while(false);
+}
+
+void ImplDRViewerOGL::CallbackHelper::KeyboardCallback(GLFWwindow *win, int key, int scancode, int action, int mod){
+    if(glfwGetKey(win, GLFW_KEY_LEFT) == GLFW_PRESS){
+        glm::mat4 r3 = glm::rotate(glm::mat4(1.0f), glm::radians(3.0f), glm::vec3(0,0,1.0f));
+        glm::mat4 tmp = r3 * handle_->model_;
+        for(int i=0; i<3; i++)
+            handle_->model_[i] = tmp[i];
+    }else if(glfwGetKey(win, GLFW_KEY_RIGHT) == GLFW_PRESS){
+        glm::mat4 r3 = glm::rotate(glm::mat4(1.0f), glm::radians(-3.0f), glm::vec3(0,0,1.0f));
+        glm::mat4 tmp = r3 * handle_->model_;
+        for(int i=0; i<3; i++)
+            handle_->model_[i] = tmp[i];
+    }
 }
 
 class ImplDRViewerVLK : public ImplDRViewerBase{
