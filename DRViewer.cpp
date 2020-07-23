@@ -3,7 +3,10 @@
 #include "shader_m.h"
 #include "camera.h"
 #include "widgets.h"
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 
+#include <unordered_map>
 #include <mutex>
 #include <GLFW/glfw3.h>
 #include <glm/gtc/quaternion.hpp>
@@ -11,12 +14,24 @@
   #include <unistd.h>
   #define SLEEP(MILLI_SECONDS) usleep(MILLI_SECONDS * 1000)
 #elif defined(_WIN64) || defined(_WIN32)
-///TODO
+///TODO for windows
 #elif defined(__APPLE__)
-///TODO
+///TODO macos
 #else
   #error "unidentified operation system!"
 #endif
+
+namespace std{
+//specialize hash for using SubWindowPos as key in unordered_map
+template <>
+struct hash<visual_utils::SubWindowPos>{
+    using result_type = size_t;
+    using argument_type = visual_utils::SubWindowPos;
+    result_type operator()(const argument_type& s) const{
+        return static_cast<result_type>(s);
+    }
+};
+}
 
 namespace visual_utils{
 
@@ -43,6 +58,97 @@ constexpr char const* FRAGMENT_SHADER_DEFAULT=
         "FragColor = vec4(Color,1.0);\n"
         "}\n";
 
+constexpr char const* TEXTURE_VERTEX_SHADER =
+        "#version 330 core\n"
+        "layout (location = 0) in vec3 aPos;\n"
+        "layout (location = 1) in vec2 aTexCoord;\n"
+        "out vec2 TexCoord;\n"
+        "void main()\n"
+        "{\n"
+            "gl_Position = vec4(aPos, 1.0f);\n"
+            "TexCoord = vec2(aTexCoord.x, 1.0 - aTexCoord.y);\n"
+        "}\n";
+
+constexpr char const* TEXTURE_FRAGMENT_SHADER =
+        "#version 330 core\n"
+        "out vec4 FragColor;\n"
+        "in vec2 TexCoord;\n"
+        "uniform sampler2D texture1;\n"
+        "void main()\n"
+        "{\n"
+            "FragColor = texture(texture1, TexCoord);\n"
+        "}\n";
+
+/*--------------helper functions definitions----------*/
+namespace  {
+
+constexpr float kSubWindowScale = 0.166666; // 1/6
+
+GLenum GLFormat(ImageFormat format){
+    switch(format) {
+        case RGB:  return GL_RGB;
+        case BGR:  return GL_BGR;
+        case RGBA: return GL_RGBA;
+        case BGRA: return GL_BGRA;
+    }
+}
+
+struct SubWindow{
+    //(x,y) represents the downleft corner of the sub-window
+    int x, y;
+    int w, h;
+    int img_w, img_h;
+    ImageFormat format;
+    float aspect_ratio;
+    std::unique_ptr<byte> data;
+
+    SubWindow(SubWindowPos pos, int parent_width, int parent_height, int _img_w,
+              int _img_h, ImageFormat f): img_w(_img_w), img_h(_img_h), format(f){
+        aspect_ratio = (float)img_w / img_h;
+        size_t area = img_h * img_w;
+        if(area > 0){
+            data.reset(new byte[area * (f > 1? 4 : 3)]);
+        }
+        Resize(pos, parent_width, parent_height);
+    }
+
+    SubWindow(const SubWindow& rhs): x(rhs.x), y(rhs.y), img_w(rhs.img_w),
+        img_h(rhs.img_h),format(rhs.format), aspect_ratio(rhs.aspect_ratio){
+        size_t num_bytes = img_h * img_w * (format > 1? 4 : 3);
+        data.reset(new byte[num_bytes]);
+        memcpy(data.get(), rhs.data.get(), num_bytes);
+    }
+
+    SubWindow& operator=(const SubWindow& rhs){
+        if(this != &rhs){
+            size_t num_bytes = img_h * img_w * (format > 1? 4 : 3);
+            memcpy(data.get(), rhs.data.get(), num_bytes);
+        }
+        return *this;
+    }
+
+    SubWindow(SubWindow&& ) = default;
+    SubWindow& operator=(SubWindow&& rhs) = default;
+
+
+    void Resize(SubWindowPos pos, int parent_width, int parent_height){
+        h = kSubWindowScale * parent_height;
+        w = h * aspect_ratio;
+        switch(pos) {
+            case TOP_LEFT1: x = 0; y = parent_height - h; break;
+            case TOP_LEFT2: x = w; y = parent_height - h; break;
+            case TOP_RIGHT1:x = parent_width -  2 * w; y = parent_height - h; break;
+            case TOP_RIGHT2:x = parent_width - w; y = parent_height - h; break;
+            case DOWN_LEFT1: x = 0; y = 0; break;
+            case DOWN_LEFT2: x = w; y = 0; break;
+            case DOWN_RIGHT1:x = parent_width -  2 * w; y = 0; break;
+            case DOWN_RIGHT2:x = parent_width - w; y=0; break;
+        }
+    }
+};
+
+}
+
 /*--------------class definitions---------------------*/
 class ImplDRViewerBase{
 public:
@@ -51,21 +157,34 @@ public:
 
     ImplDRViewerBase(const ImplDRViewerBase& rhs): traj_(rhs.traj_), api_(rhs.api_),
         pos_cam_(rhs.pos_cam_), width_(rhs.width_), height_(rhs.height_),
-        array_pc_(rhs.array_pc_), num_pc_(rhs.num_pc_){}
+        sub_windows_(rhs.sub_windows_){
+        array_pcl_ = rhs.array_pcl_;
+        size_pcl_ = rhs.size_pcl_;
+        pos_off_pcl_ = rhs.pos_off_pcl_;
+        col_off_pcl_ = rhs.col_off_pcl_;
+    }
 
     ImplDRViewerBase(ImplDRViewerBase&& rhs) noexcept: traj_(std::move(rhs.traj_)),
-        api_(rhs.api_), pos_cam_(rhs.pos_cam_), width_(rhs.width_),height_(rhs.height_),
-        array_pc_(rhs.array_pc_), num_pc_(rhs.num_pc_){}
+        sub_windows_(std::move(rhs.sub_windows_)),api_(rhs.api_), pos_cam_(rhs.pos_cam_),
+        width_(rhs.width_),height_(rhs.height_){
+        array_pcl_ = rhs.array_pcl_;
+        size_pcl_ = rhs.size_pcl_;
+        pos_off_pcl_ = rhs.pos_off_pcl_;
+        col_off_pcl_ = rhs.col_off_pcl_;
+    }
 
     ImplDRViewerBase& operator=(const ImplDRViewerBase& rhs) {
-        if(this != &rhs){
+        if(this != &rhs){            
             traj_ = rhs.traj_;
+            sub_windows_ = rhs.sub_windows_;
             pos_cam_ = rhs.pos_cam_;
             width_ = rhs.width_;
             height_ = rhs.height_;
             api_ = rhs.api_;
-            array_pc_ = rhs.array_pc_;
-            num_pc_ = rhs.num_pc_;
+            array_pcl_ = rhs.array_pcl_;
+            size_pcl_ = rhs.size_pcl_;
+            pos_off_pcl_ = rhs.pos_off_pcl_;
+            col_off_pcl_ = rhs.col_off_pcl_;
             model_ = rhs.model_;
             view_ = rhs.view_;
             projection_ = rhs.projection_;
@@ -77,12 +196,15 @@ public:
     ImplDRViewerBase& operator=(ImplDRViewerBase&& rhs) noexcept{
         if(this != &rhs){
             traj_ = std::move(rhs.traj_);
+            sub_windows_ = std::move(rhs.sub_windows_);
             pos_cam_ = rhs.pos_cam_;
             width_ = rhs.width_;
             height_ = rhs.height_;
             api_ = rhs.api_;
-            array_pc_ = rhs.array_pc_;
-            num_pc_ = rhs.num_pc_;
+            array_pcl_ = rhs.array_pcl_;
+            size_pcl_ = rhs.size_pcl_;
+            pos_off_pcl_ = rhs.pos_off_pcl_;
+            col_off_pcl_ = rhs.col_off_pcl_;
             model_ = rhs.model_;
             view_ = rhs.view_;
             projection_ = rhs.projection_;
@@ -93,20 +215,43 @@ public:
 
     virtual ~ImplDRViewerBase(){};
     virtual bool ShouldExit() const = 0;
-    virtual void Render() = 0;
+    virtual void Render() = 0;    
 
-    virtual void Wait(unsigned int milliseconds){
+    virtual void Wait(unsigned int milliseconds){        
         SLEEP(milliseconds);
     }
 
     GraphicAPI APIType() const {return api_;}
-    void BindPointCloudData(const void* data, size_t num_vertices){
-        array_pc_ = data;
-        num_pc_ = num_vertices;
+
+    void BindPointCloudData(const void* data, size_t num_vertices,
+                            int stride, int pos_off, int col_off){
+        std::lock_guard<std::mutex> lck(mtx_);
+        array_pcl_ = data;
+        size_pcl_ = num_vertices;
+        stride_pcl_ = stride;
+        pos_off_pcl_ = pos_off;
+        col_off_pcl_ = col_off;
+    }
+
+    void BindImageData(const byte* data, int w, int h, ImageFormat f, SubWindowPos sub_win){
+        std::lock_guard<std::mutex> lck(mtx_);
+        auto iter = sub_windows_.find(sub_win);
+        if(iter != sub_windows_.end()){
+            if(w != iter->second.img_w || h != iter->second.img_h){
+                iter->second = std::move(SubWindow(iter->first, width_, height_, w, h, f));
+            }
+            memcpy(iter->second.data.get(), data, w * h * (f > 1? 4 : 3));
+        }else{
+            auto ret = sub_windows_.insert(std::make_pair(sub_win, SubWindow(
+                                           sub_win, width_, height_, w, h, f)));
+            CreateTexture(sub_win);
+            memcpy(ret.first->second.data.get(), data, w * h * (f > 1? 4 : 3));
+        }
     }
 
     void AddCameraPose(glm::quat& rotation, const glm::vec3& position,
                        const glm::vec3& color){
+        std::lock_guard<std::mutex> lck(mtx_);
         frustum_pose_ = glm::mat4(rotation);
         frustum_pose_[3] = glm::vec4(position, 1.0f);
         traj_.emplace_back(position);
@@ -119,11 +264,18 @@ protected:
     glm::mat4 view_ = glm::mat4(1.0f);
     glm::mat4 projection_ = glm::mat4(1.0f);
     glm::mat4 frustum_pose_ = glm::mat4(1.0f);
-    const void* array_pc_ = nullptr;
-    size_t num_pc_ = 0;
+    const void* array_pcl_ = nullptr;
+    size_t size_pcl_ = 0;
+    int stride_pcl_ = 0;
+    int pos_off_pcl_ = 0;
+    int col_off_pcl_ = 0;
     GraphicAPI api_;
     glm::vec3 pos_cam_;
-    int width_, height_;
+    int width_, height_;    
+    std::mutex mtx_;
+    std::unordered_map<SubWindowPos, SubWindow> sub_windows_;
+
+    virtual void CreateTexture(SubWindowPos pos) = 0;
 };
 
 class ImplDRViewerOGL : public ImplDRViewerBase{
@@ -155,7 +307,7 @@ public:
 
         auto scroll_callback = [](GLFWwindow* win, double xoff, double yoff){
             auto helper = static_cast<CallbackHelper*>(glfwGetWindowUserPointer(win));
-            helper->ScrollCallback(xoff, yoff);
+            helper->ScrollCallback(win, xoff, yoff);
         };
 
         auto mouse_move_callback = [](GLFWwindow* win, double xpos, double ypos){
@@ -179,23 +331,27 @@ public:
             std::cerr << "Failed to initialize GLAD" << std::endl;
             exit(-1);
         }
-        shader_ = new Shader(std::string(vert_shader_src), frag_shader_src);
+        plain_shader_ = new Shader(std::string(vert_shader_src), frag_shader_src);
+        texture_shader_ = new Shader(std::string(TEXTURE_VERTEX_SHADER), std::string(TEXTURE_FRAGMENT_SHADER));
         glGenVertexArrays(1, &vao_);
         glGenBuffers(1, &vbo_);
         glGenBuffers(1, &ebo_);
     }
 
     ImplDRViewerOGL(const ImplDRViewerOGL& rhs): ImplDRViewerBase(rhs),
-        shader_(rhs.shader_), window_(rhs.window_){
+        plain_shader_(rhs.plain_shader_), texture_shader_(rhs.texture_shader_),
+        window_(rhs.window_),textures_(rhs.textures_){
         TrivialAssign(rhs);
         ++(*ref_count_);
     }
 
     ImplDRViewerOGL(ImplDRViewerOGL&& rhs) noexcept: ImplDRViewerBase(std::move(rhs)),
-        shader_(rhs.shader_), window_(rhs.window_){
+        plain_shader_(rhs.plain_shader_), texture_shader_(rhs.texture_shader_),
+        window_(rhs.window_), textures_(std::move(rhs.textures_)){
         TrivialAssign(rhs);
 
-        rhs.shader_ = nullptr;
+        rhs.plain_shader_ = nullptr;
+        rhs.texture_shader_ = nullptr;
         rhs.window_ = nullptr;
         rhs.ref_count_ = nullptr;
         rhs.callback_helper_ = nullptr;
@@ -206,8 +362,10 @@ public:
             Destruct();
             TrivialAssign(rhs);
 
+            textures_ = rhs.textures_;
             ImplDRViewerBase::operator=(rhs);
-            shader_ = rhs.shader_;
+            plain_shader_ = rhs.plain_shader_;
+            texture_shader_ = rhs.texture_shader_;
             window_ = rhs.window_;
             ++(*ref_count_);
         }
@@ -219,11 +377,14 @@ public:
             Destruct();
             TrivialAssign(rhs);
 
+            textures_ = std::move(rhs.textures_);
             ImplDRViewerBase::operator=(std::move(rhs));
-            shader_ = rhs.shader_;
+            plain_shader_ = rhs.plain_shader_;
+            texture_shader_ = rhs.texture_shader_;
             window_ = rhs.window_;
 
-            rhs.shader_ = nullptr;
+            rhs.plain_shader_ = nullptr;
+            rhs.texture_shader_ = nullptr;
             rhs.window_ = nullptr;
             rhs.ref_count_ = nullptr;
             rhs.callback_helper_ = nullptr;
@@ -241,8 +402,7 @@ public:
         return glfwWindowShouldClose(window_);
     }
 
-    void Render() override{
-        //support multi-threads
+    void Render() override{        
         std::lock_guard<std::mutex> lck(mtx_);
 
         float current_time = glfwGetTime();
@@ -254,20 +414,22 @@ public:
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_LINE_SMOOTH);
         glEnable(GL_MULTISAMPLE);
+        glViewport(0, 0, width_, height_);
 
-        shader_->use();
+        plain_shader_->use();
         view_ = camera_.GetViewMatrix();
         projection_ = glm::perspective(glm::radians(camera_.Zoom),
                            (float)width_ / height_, 0.1f, 100.0f);
-        shader_->setMat4("view", view_);
-        shader_->setMat4("projection", projection_);
+        plain_shader_->setMat4("view", view_);
+        plain_shader_->setMat4("projection", projection_);
 
 //        DrawCube();
         DrawCoordinateSystem(4.0f);
         DrawGrids();
         DrawFrustum();
         DrawTrajectory();
-        DrawPointCloud();
+        DrawPointCloud(point_size_);
+        DrawTexture();
 
         GLenum err;
         while ((err = glGetError()) != GL_NO_ERROR) {
@@ -288,7 +450,7 @@ private:
         void WindowSizeCallback(int, int);
         void MouseMoveCallback(GLFWwindow*, double, double);
         void KeyboardCallback(GLFWwindow*, int, int, int, int);
-        void ScrollCallback(double, double);
+        void ScrollCallback(GLFWwindow*, double, double);
 
         ImplDRViewerOGL* handle_;
 
@@ -296,16 +458,17 @@ private:
     };
 
 private:
-    Shader* shader_;
+    Shader* plain_shader_, *texture_shader_;
     GLFWwindow* window_;
     CallbackHelper* callback_helper_;
-    std::mutex mtx_;
     float lastX_ = 0.0f, lastY_ = 0.0f;
     float last_time_ = 0.0f, delta_time_ = 0.0f;
     bool clr_left_mouse_ = true, clr_right_mouse_ = true;
     Camera camera_ = Camera(glm::vec3(0.0f, 0.0f, 0.0f));
     size_t* ref_count_ = nullptr;
     GLuint vao_, vbo_, ebo_;
+    GLfloat point_size_ = 1.0f;
+    std::unordered_map<SubWindowPos, GLuint*> textures_;
 
 private:
     void TrivialAssign(const ImplDRViewerOGL& rhs) noexcept{
@@ -320,6 +483,7 @@ private:
         clr_right_mouse_ = rhs.clr_right_mouse_;
         camera_ = rhs.camera_;
         ref_count_ = rhs.ref_count_;
+        point_size_ = rhs.point_size_;
         callback_helper_ = rhs.callback_helper_;
         callback_helper_->handle_ = this;
     }
@@ -328,23 +492,38 @@ private:
         if(ref_count_ != nullptr){
             --(*ref_count_);
             if(*ref_count_ == 0){
-                delete shader_;
+                delete plain_shader_;
+                delete texture_shader_;
                 delete callback_helper_;
                 delete ref_count_;
                 ref_count_ = nullptr;
+                for(auto& e : textures_){
+                    glDeleteTextures(1, e.second);
+                    delete e.second;
+                }
 
                 glDeleteVertexArrays(1, &vao_);
                 glDeleteBuffers(1, &vbo_);
-                glDeleteBuffers(1, &ebo_);
+                glDeleteBuffers(1, &ebo_);                
                 glfwDestroyWindow(window_);
             }
         }
     }
 
+    virtual void CreateTexture(SubWindowPos pos) override{
+        textures_[pos] = new GLuint;
+        glGenTextures(1, textures_[pos]);
+        glBindTexture(GL_TEXTURE_2D, *(textures_[pos]));
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    }
+
     void BindRenderBuffer(const GLvoid* vert_buff, GLsizeiptr vert_buff_size, bool use_ebo = false,
                           const GLvoid* indices_buff = nullptr, GLsizeiptr indices_buff_size = 0,
                           GLenum usage = GL_STATIC_DRAW, GLsizei stride = 6 * sizeof(float),
-                          size_t pos_offset = 0, size_t color_offset = 3 * sizeof(float)){
+                          size_t pos_offset = 0, size_t color_offset = 3 * sizeof(float), bool bind_tex = false){
         glBindVertexArray(vao_);
         glBindBuffer(GL_ARRAY_BUFFER, vbo_);
         glBufferData(GL_ARRAY_BUFFER, vert_buff_size, vert_buff, usage);
@@ -356,20 +535,43 @@ private:
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo_);
             glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices_buff_size, indices_buff, usage);
         }
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)pos_offset);
+        if(bind_tex){
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)0);
+            glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)(3*sizeof(float)));
+        }else{
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)pos_offset);
+            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, (void*)color_offset);
+        }
         glEnableVertexAttribArray(0);
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, (void*)color_offset);
         glEnableVertexAttribArray(1);
+    }
+
+    void DrawTexture(){
+        for(auto it = sub_windows_.begin(); it != sub_windows_.end(); ++it){
+            SubWindowPos pos = it->first;
+            const SubWindow& sub_win = it->second;
+            glBindTexture(GL_TEXTURE_2D, *textures_[pos]);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, sub_win.img_w, sub_win.img_h, 0,
+                        GLFormat(sub_win.format), GL_UNSIGNED_BYTE, sub_win.data.get());
+            glGenerateMipmap(GL_TEXTURE_2D);
+            glViewport(sub_win.x, sub_win.y, sub_win.w, sub_win.h);
+
+            texture_shader_->use();
+            BindRenderBuffer(vertices_texture, sizeof(vertices_texture), true, indices_texture,
+                            sizeof(indices_texture), GL_STATIC_DRAW, 0, 0, 0, true);
+            glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0);
+        }
     }
 
     void DrawCube(){
         BindRenderBuffer(vertices_cube, sizeof(vertices_cube));
+        plain_shader_->setMat4("model", model_);
         glDrawArrays(GL_TRIANGLES, 0, 36);
     }
 
     void DrawCoordinateSystem(GLfloat line_width = 1.0f){
         BindRenderBuffer(vertices_coordinates, sizeof(vertices_coordinates));
-        shader_->setMat4("model", model_);
+        plain_shader_->setMat4("model", model_);
         glLineWidth(line_width);
         glDrawArrays(GL_LINES, 0, 6);
         glLineWidth(1.0f);
@@ -378,7 +580,7 @@ private:
     void DrawFrustum(GLfloat line_width = 1.0f){
         BindRenderBuffer(vertices_frustum, sizeof(vertices_frustum), true,
                          indices_frustum , sizeof(indices_frustum));
-        shader_->setMat4("model", model_ * frustum_pose_);
+        plain_shader_->setMat4("model", model_ * frustum_pose_);
         glLineWidth(line_width);
         glDrawElements(GL_LINES, 16, GL_UNSIGNED_SHORT, 0);
         glLineWidth(1.0f);
@@ -387,7 +589,7 @@ private:
     void DrawGrids(GLfloat line_width = 1.0f){
         BindRenderBuffer(vertices_grids, sizeof(vertices_grids), true,
                          indices_grids , sizeof(indices_grids));
-        shader_->setMat4("model", model_);
+        plain_shader_->setMat4("model", model_);
         glLineWidth(line_width);
         glDrawElements(GL_LINES, sizeof(indices_grids) / sizeof(unsigned short),
                        GL_UNSIGNED_SHORT, 0);
@@ -396,30 +598,43 @@ private:
 
     void DrawTrajectory(GLfloat line_width = 1.0f){
        BindRenderBuffer(traj_.data(), traj_.size() * sizeof(glm::vec3));
-       shader_->setMat4("model", model_);
+       plain_shader_->setMat4("model", model_);
        glLineWidth(line_width);
        glDrawArrays(GL_LINE_STRIP, 0, traj_.size() / 2);// traj_.size() * 3 / 6
        glLineWidth(1.0f);
     }
 
     void DrawPointCloud(GLfloat point_size = 1.0f){
-        BindRenderBuffer(array_pc_, num_pc_ * 6 * sizeof(float));
-        shader_->setMat4("model", model_);
+        BindRenderBuffer(array_pcl_, size_pcl_ * stride_pcl_,
+                         false, nullptr, 0, GL_STATIC_DRAW,
+                         stride_pcl_, pos_off_pcl_, col_off_pcl_);
+        plain_shader_->setMat4("model", model_);
         glPointSize(point_size);
-        glDrawArrays(GL_POINTS, 0, num_pc_);
-        glPointSize(1.0f);
+        glDrawArrays(GL_POINTS, 0, size_pcl_);
+        glPointSize(1.0f);        
     }
 
 };
 
-void ImplDRViewerOGL::CallbackHelper::WindowSizeCallback(int w, int h){
-    glViewport(0, 0, w, h);
+void ImplDRViewerOGL::CallbackHelper::WindowSizeCallback(int w, int h){    
     handle_->width_ = w;
     handle_->height_ = h;
+    for(auto it = handle_->sub_windows_.begin();
+        it!= handle_->sub_windows_.end(); ++it){
+        it->second.Resize(it->first, w, h);
+    }
 }
 
-void ImplDRViewerOGL::CallbackHelper::ScrollCallback(double xoff, double yoff){
-    handle_->camera_.ProcessMouseScroll(yoff, handle_->delta_time_);
+void ImplDRViewerOGL::CallbackHelper::ScrollCallback(GLFWwindow* win, double xoff, double yoff){
+    if(glfwGetKey(win,  GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
+       glfwGetKey(win, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS){
+        handle_->point_size_ += yoff > 0? 1 : -1;
+        if(handle_->point_size_ > 10.0f)
+            handle_->point_size_ = 10.0f;
+        if(handle_->point_size_ < 1.0f)
+            handle_->point_size_ = 1.0f;
+    }else
+        handle_->camera_.ProcessMouseScroll(yoff, handle_->delta_time_);
 }
 
 void ImplDRViewerOGL::CallbackHelper::MouseMoveCallback(GLFWwindow* window, double xpos, double ypos){
@@ -493,6 +708,7 @@ public:
                     const char* frag_shader_src, GraphicAPI api) :
         ImplDRViewerBase(x, y, z, width, height, api) {}
     virtual bool ShouldExit() const override { return true;}
+    virtual void CreateTexture(SubWindowPos pos) override {};
     void Render() override{}
 
     virtual ~ImplDRViewerVLK(){}
@@ -505,6 +721,7 @@ public:
                     const char* frag_shader_src,  GraphicAPI api) :
         ImplDRViewerBase(x, y, z, width, height, api) {}
     virtual bool ShouldExit() const override { return true;}
+    virtual void CreateTexture(SubWindowPos pos) override {};
     void Render() override{}
 
     virtual ~ImplDRViewerMTL(){}
@@ -557,8 +774,14 @@ public:
 
     bool ShouldExit() const {return impl_->ShouldExit();}
     void Render() {impl_->Render();}
-    void BindPoinCloudData(const void* data, size_t num_vertices){
-        impl_->BindPointCloudData(data, num_vertices);
+    void BindPoinCloudData(const void* data, size_t num_vertices,
+                           int stride, int pos_off, int col_off){
+        impl_->BindPointCloudData(data, num_vertices,stride,
+                                  pos_off, col_off);
+    }
+    void BindImageData(const byte *data, int width, int height,
+                      ImageFormat format, SubWindowPos sub_win){
+        impl_->BindImageData(data, width, height, format, sub_win);
     }
     void AddCameraPose(glm::quat& rotation, const glm::vec3& position,
                        const glm::vec3& color=glm::vec3(1.0f,1.0f,1.0f)){
@@ -575,8 +798,8 @@ private:
 
 DRViewer::DRViewer(float cam_x,float cam_y,float cam_z, int width, int height,
                    const char* vert_shader_src, const char* frag_shader_src,
-                   GraphicAPI api) : impl_(new Impl(cam_x, cam_y, cam_z, width,
-            height, vert_shader_src, frag_shader_src, api)) {}
+                   const char* win_name, GraphicAPI api) : impl_(new Impl(
+                   cam_x, cam_y, cam_z, width,height, vert_shader_src, frag_shader_src, api)) {}
 
 DRViewer::DRViewer(const DRViewer& rhs) : impl_(new Impl(*rhs.impl_)){}
 
@@ -592,8 +815,14 @@ DRViewer& DRViewer::operator=(DRViewer&&) = default;
 DRViewer::~DRViewer() = default;
 
 
-void DRViewer::BindPoinCloudData(const void *data, size_t num_vertices){
-    impl_->BindPoinCloudData(data, num_vertices);
+void DRViewer::BindPoinCloudData(const void *data, size_t num_vertices,
+                                 int stride, int pos_off, int col_off){
+    impl_->BindPoinCloudData(data, num_vertices, stride, pos_off, col_off);
+}
+
+void DRViewer::BindImageData(const byte *data, int width, int height,
+                             ImageFormat format, SubWindowPos sub_win){
+    impl_->BindImageData(data, width, height, format, sub_win);
 }
 
 void DRViewer::AddCameraPose(float qw, float qx, float qy, float qz,

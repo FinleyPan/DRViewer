@@ -15,12 +15,15 @@ message(STATUS "Build Type: ${CMAKE_BUILD_TYPE}")
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/modules/")
 
 find_package(GLFW3 REQUIRED)
+find_package(OpenCV 3 REQUIRED)
+
+include_directories(${OpenCV_INCLUDE_DIRS})
 
 add_library(viewer SHARED DRViewer.cpp glad.c widgets.cpp)
 target_link_libraries(viewer ${GLFW3_LIBRARY} dl)
 
 add_executable(viewer-test main.cpp)
-target_link_libraries(viewer-test viewer)
+target_link_libraries(viewer-test viewer ${OpenCV_LIBRARIES})
 
 install(TARGETS viewer LIBRARY DESTINATION lib)
 install(FILES DRViewer.h DESTINATION include)

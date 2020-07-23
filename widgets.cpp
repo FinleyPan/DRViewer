@@ -918,5 +918,17 @@ constexpr unsigned short indices_grids[] = {
     417,418,418,439,439,438,438,417,
     418,419,419,440,440,439,439,418,
 };
+
+constexpr float vertices_texture[]={
+     1.0f,  1.0f, 0.0f, 1.0f, 1.0f, // top right
+     1.0f, -1.0f, 0.0f, 1.0f, 0.0f, // bottom right
+    -1.0f, -1.0f, 0.0f, 0.0f, 0.0f, // bottom left
+    -1.0f,  1.0f, 0.0f, 0.0f, 1.0f  // top left
+};
+
+constexpr unsigned short indices_texture[] = {
+    0, 1, 3, // first triangle
+    1, 2, 3  // second triangle
+};
 }
 
