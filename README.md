@@ -30,5 +30,5 @@ Finally, you can add these files to your projects.
 1 *move mouse under left mouse button pressed*: move the whole 3D scene.  
 2 *move mouse under right mouse button pressed*: rotate the whole 3D scene around x/y axis.  
 3 *scroll mouse wheel*: zoom in and out the whole 3D scene.  
-4 *scroll mouse wheel under ctrl pressed*: enlarge and shrink ths points.
-4 *press left/right arrow button*: rotate the whole 3D scene around z axis.
+4 *scroll mouse wheel under ctrl pressed*: enlarge and shrink ths points.  
+5 *press left/right arrow button*: rotate the whole 3D scene around z axis.
