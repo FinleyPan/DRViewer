@@ -4,10 +4,10 @@
 #include "camera.h"
 #include "widgets.h"
 #define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
 
 #include <unordered_map>
 #include <mutex>
+#include <string.h>
 #include <GLFW/glfw3.h>
 #include <glm/gtc/quaternion.hpp>
 #if defined(__linux) || defined(__posix)
@@ -31,6 +31,7 @@ struct hash<visual_utils::SubWindowPos>{
         return static_cast<result_type>(s);
     }
 };
+
 }
 
 namespace visual_utils{
@@ -79,10 +80,17 @@ constexpr char const* TEXTURE_FRAGMENT_SHADER =
             "FragColor = texture(texture1, TexCoord);\n"
         "}\n";
 
+constexpr char const* DEFAULT_WINDOW_NAME = "DRViewer";
+
 /*--------------helper functions definitions----------*/
 namespace  {
 
-constexpr float kSubWindowScale = 0.166666; // 1/6
+constexpr float kSubWindowScale = 0.166666f; // 1/6
+constexpr float kAngleSpeedZAxis = 3.0f;
+constexpr float kSceneMoveSpeedFactor = 0.00125f;
+constexpr float kPointSizeExpandSpeed = 1.0f;
+constexpr float kMaxPointSize = 10.0f;
+constexpr float kMinPointSize = 1.0f;
 
 GLenum GLFormat(ImageFormat format){
     switch(format) {
@@ -127,7 +135,7 @@ struct SubWindow{
         return *this;
     }
 
-    SubWindow(SubWindow&& ) = default;
+    SubWindow(SubWindow&& rhs) = default;
     SubWindow& operator=(SubWindow&& rhs) = default;
 
 
@@ -281,8 +289,8 @@ protected:
 class ImplDRViewerOGL : public ImplDRViewerBase{
 public:
     ImplDRViewerOGL(float x,float y,float z, int width, int height, const char* vert_shader_src,
-                    const char* frag_shader_src, GraphicAPI api) : ImplDRViewerBase(x, y, z, width,
-        height, api), camera_(pos_cam_), ref_count_(new size_t(1)) {
+                    const char* frag_shader_src, const char* win_name, GraphicAPI api) :
+        ImplDRViewerBase(x, y, z, width, height, api), camera_(pos_cam_), ref_count_(new size_t(1)) {
 
         glfwInit();
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
@@ -291,7 +299,7 @@ public:
 #ifdef __APPLE__
         glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE); // uncomment this statement to fix compilation on OS X
 #endif
-        window_ = glfwCreateWindow(width_, height_, "DRViewer", nullptr, nullptr);
+        window_ = glfwCreateWindow(width_, height_, win_name, nullptr, nullptr);
         if (window_ == nullptr) {
             std::cerr << "Failed to create GLFW window" << std::endl;
             glfwDestroyWindow(window_);
@@ -578,6 +586,7 @@ private:
     }
 
     void DrawFrustum(GLfloat line_width = 1.0f){
+        if(traj_.empty()) return;
         BindRenderBuffer(vertices_frustum, sizeof(vertices_frustum), true,
                          indices_frustum , sizeof(indices_frustum));
         plain_shader_->setMat4("model", model_ * frustum_pose_);
@@ -597,6 +606,7 @@ private:
     }
 
     void DrawTrajectory(GLfloat line_width = 1.0f){
+       if(traj_.empty()) return;
        BindRenderBuffer(traj_.data(), traj_.size() * sizeof(glm::vec3));
        plain_shader_->setMat4("model", model_);
        glLineWidth(line_width);
@@ -604,14 +614,14 @@ private:
        glLineWidth(1.0f);
     }
 
-    void DrawPointCloud(GLfloat point_size = 1.0f){
+    void DrawPointCloud(GLfloat point_size = 1.0f){        
         BindRenderBuffer(array_pcl_, size_pcl_ * stride_pcl_,
                          false, nullptr, 0, GL_STATIC_DRAW,
                          stride_pcl_, pos_off_pcl_, col_off_pcl_);
         plain_shader_->setMat4("model", model_);
         glPointSize(point_size);
         glDrawArrays(GL_POINTS, 0, size_pcl_);
-        glPointSize(1.0f);        
+        glPointSize(1.0f);
     }
 
 };
@@ -628,11 +638,11 @@ void ImplDRViewerOGL::CallbackHelper::WindowSizeCallback(int w, int h){
 void ImplDRViewerOGL::CallbackHelper::ScrollCallback(GLFWwindow* win, double xoff, double yoff){
     if(glfwGetKey(win,  GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
        glfwGetKey(win, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS){
-        handle_->point_size_ += yoff > 0? 1 : -1;
-        if(handle_->point_size_ > 10.0f)
-            handle_->point_size_ = 10.0f;
-        if(handle_->point_size_ < 1.0f)
-            handle_->point_size_ = 1.0f;
+        handle_->point_size_ += yoff > 0? kPointSizeExpandSpeed : -kPointSizeExpandSpeed;
+        if(handle_->point_size_ > kMaxPointSize)
+            handle_->point_size_ = kMaxPointSize;
+        if(handle_->point_size_ < kMinPointSize)
+            handle_->point_size_ = kMinPointSize;
     }else
         handle_->camera_.ProcessMouseScroll(yoff, handle_->delta_time_);
 }
@@ -655,7 +665,7 @@ void ImplDRViewerOGL::CallbackHelper::MouseMoveCallback(GLFWwindow* window, doub
         handle_->lastX_ = xpos;
         handle_->lastY_ = ypos;
 
-        float speed = std::fabs(handle_->camera_.Position[2]) * 0.00125f;
+        float speed = std::fabs(handle_->camera_.Position[2]) * kSceneMoveSpeedFactor;
         handle_->model_[3] = handle_->model_[3] + glm::vec4(glm::vec3(speed * xoffset, 0, 0),0)
                                 + glm::vec4(glm::vec3(0, speed * yoffset, 0),0);
         return ;
@@ -678,10 +688,9 @@ void ImplDRViewerOGL::CallbackHelper::MouseMoveCallback(GLFWwindow* window, doub
         handle_->lastX_ = xpos;
         handle_->lastY_ = ypos;
 
-        glm::mat4 r1 = glm::rotate(glm::mat4(1.0f), glm::radians(-yoffset * 0.5f), glm::vec3(1.0f,0.0f,0.0f));
-        glm::mat4 r2 = glm::rotate(glm::mat4(1.0f), glm::radians( xoffset * 0.5f), glm::vec3(0.0f,1.0f,0.0f));
-//        glm::mat4 r3 = glm::rotate(glm::mat4(), glm::radians(speed), glm::vec3(0,0,1.0f));
-        glm::mat4 tmp = /*r3 **/ r2 * r1 * handle_->model_;
+        glm::mat4 rx = glm::rotate(glm::mat4(1.0f), glm::radians(-yoffset * 0.5f), glm::vec3(1.0f,0.0f,0.0f));
+        glm::mat4 ry = glm::rotate(glm::mat4(1.0f), glm::radians( xoffset * 0.5f), glm::vec3(0.0f,1.0f,0.0f));
+        glm::mat4 tmp = ry * rx * handle_->model_;
         for(int i=0; i<3; i++)
             handle_->model_[i] = tmp[i];
         return ;
@@ -690,12 +699,12 @@ void ImplDRViewerOGL::CallbackHelper::MouseMoveCallback(GLFWwindow* window, doub
 
 void ImplDRViewerOGL::CallbackHelper::KeyboardCallback(GLFWwindow *win, int key, int scancode, int action, int mod){
     if(glfwGetKey(win, GLFW_KEY_LEFT) == GLFW_PRESS){
-        glm::mat4 r3 = glm::rotate(glm::mat4(1.0f), glm::radians(3.0f), glm::vec3(0,0,1.0f));
+        glm::mat4 r3 = glm::rotate(glm::mat4(1.0f), glm::radians(kAngleSpeedZAxis), glm::vec3(0,0,1.0f));
         glm::mat4 tmp = r3 * handle_->model_;
         for(int i=0; i<3; i++)
             handle_->model_[i] = tmp[i];
     }else if(glfwGetKey(win, GLFW_KEY_RIGHT) == GLFW_PRESS){
-        glm::mat4 r3 = glm::rotate(glm::mat4(1.0f), glm::radians(-3.0f), glm::vec3(0,0,1.0f));
+        glm::mat4 r3 = glm::rotate(glm::mat4(1.0f), glm::radians(kAngleSpeedZAxis), glm::vec3(0,0,1.0f));
         glm::mat4 tmp = r3 * handle_->model_;
         for(int i=0; i<3; i++)
             handle_->model_[i] = tmp[i];
@@ -705,7 +714,7 @@ void ImplDRViewerOGL::CallbackHelper::KeyboardCallback(GLFWwindow *win, int key,
 class ImplDRViewerVLK : public ImplDRViewerBase{
 public:
     ImplDRViewerVLK(float x,float y,float z, int width, int height, const char* vert_shader_src,
-                    const char* frag_shader_src, GraphicAPI api) :
+                    const char* frag_shader_src, const char* win_name, GraphicAPI api) :
         ImplDRViewerBase(x, y, z, width, height, api) {}
     virtual bool ShouldExit() const override { return true;}
     virtual void CreateTexture(SubWindowPos pos) override {};
@@ -718,7 +727,7 @@ public:
 class ImplDRViewerMTL : public ImplDRViewerBase{
 public:
     ImplDRViewerMTL(float x,float y,float z, int width, int height, const char* vert_shader_src,
-                    const char* frag_shader_src,  GraphicAPI api) :
+                    const char* frag_shader_src, const char* win_name, GraphicAPI api) :
         ImplDRViewerBase(x, y, z, width, height, api) {}
     virtual bool ShouldExit() const override { return true;}
     virtual void CreateTexture(SubWindowPos pos) override {};
@@ -733,17 +742,17 @@ class DRViewer::Impl{
 public:
     Impl(float cam_x,float cam_y,float cam_z, int width, int height,
          const char* vert_shader_src, const char* frag_shader_src,
-         GraphicAPI api) : impl_(nullptr){
+         const char* win_name, GraphicAPI api) : impl_(nullptr){
         switch (api) {
             case GraphicAPI::OPENGL:
                 impl_.reset(new ImplDRViewerOGL(cam_x, cam_y, cam_z, width, height,
-                            vert_shader_src, frag_shader_src, api)); break;
+                            vert_shader_src, frag_shader_src, win_name, api)); break;
             case GraphicAPI::VULKAN:
                 impl_.reset(new ImplDRViewerVLK(cam_x, cam_y, cam_z, width, height,
-                            vert_shader_src, frag_shader_src, api)); break;
+                            vert_shader_src, frag_shader_src, win_name, api)); break;
             case GraphicAPI::METAL:
                 impl_.reset(new ImplDRViewerMTL(cam_x, cam_y, cam_z, width, height,
-                            vert_shader_src, frag_shader_src, api)); break;
+                            vert_shader_src, frag_shader_src, win_name, api)); break;
         }
     }
 
@@ -797,9 +806,10 @@ private:
 
 
 DRViewer::DRViewer(float cam_x,float cam_y,float cam_z, int width, int height,
-                   const char* vert_shader_src, const char* frag_shader_src,
-                   const char* win_name, GraphicAPI api) : impl_(new Impl(
-                   cam_x, cam_y, cam_z, width,height, vert_shader_src, frag_shader_src, api)) {}
+                   const char* window_name,const char* vert_shader_src,
+                   const char* frag_shader_src,GraphicAPI api) : impl_(new Impl(
+                   cam_x, cam_y, cam_z, width, height, vert_shader_src,
+                   frag_shader_src, window_name, api)) {}
 
 DRViewer::DRViewer(const DRViewer& rhs) : impl_(new Impl(*rhs.impl_)){}
 

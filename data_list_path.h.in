@@ -1,0 +1,1 @@
+const char * data_list_path = "${CMAKE_SOURCE_DIR}/data/data_list.txt";

@@ -7,6 +7,7 @@ namespace visual_utils{
 
 extern char const* const VERTEX_SHADER_DEFAULT;
 extern char const* const FRAGMENT_SHADER_DEFAULT;
+extern char const* const DEFAULT_WINDOW_NAME;
 
 using byte = unsigned char;
 
@@ -33,11 +34,11 @@ enum SubWindowPos{  //---------------------
 
 class DRViewer{
 public:
-    DRViewer(float cam_x = 0,float cam_y = 0,float cam_z = 0,
+    DRViewer(float cam_x = 0,float cam_y = 0, float cam_z = 0,
              int width = 800, int height = 600,
+             const char* window_name = DEFAULT_WINDOW_NAME,
              const char* vert_shader_src = VERTEX_SHADER_DEFAULT,
              const char* frag_shader_src = FRAGMENT_SHADER_DEFAULT,
-             const char* window_name = "DRViewer",
              GraphicAPI api = GraphicAPI::OPENGL);
     ~DRViewer();
     DRViewer(const DRViewer&);
@@ -45,16 +46,16 @@ public:
     DRViewer& operator=(const DRViewer&);
     DRViewer& operator=(DRViewer&&);
 
+    //return true once escape pressed
     bool ShouldExit() const;
     void Wait(unsigned int milliseconds);
     void Render();
 
     //each least indivisible element in the data array must be of float type
-    //default layout of data array is like: ...|x y x r g b|x y z r g b|...
+    //default layout of data array is like: ...|x y z r g b|x y z r g b|...
     void BindPoinCloudData(const void* data, size_t num_vertices, int stride = 6*sizeof(float),
                            int position_offset = 0, int color_offset = 3 * sizeof(float));
-    void BindImageData(const byte* data, int width, int height, ImageFormat format,
-                       SubWindowPos win = DOWN_LEFT1);
+    void BindImageData(const byte* data, int width, int height, ImageFormat format, SubWindowPos win = DOWN_LEFT1);
     void AddCameraPose(float qw, float qx, float qy, float qz, float x, float y, float z);
 
 private:
