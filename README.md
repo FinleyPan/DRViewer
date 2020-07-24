@@ -17,7 +17,7 @@ sudo apt-get install libglm-dev
 ```
 - OpenCV 3(optionally for building the demo)
 
-Then follow the cmake routine to build the whole project, then the library file and header file can be found in `/path/to/install_directory`:
+Then follow cmake routine to build the whole project,the library file and header file can be found in `/path/to/install_directory`:
 ```
 $ cd /path/to/project_directory
 $ mkdir build && cd build
@@ -28,6 +28,7 @@ Finally, you can add these files to your projects.
 
 ## Interactive Operations on DRViewer
 1 *move mouse under left mouse button pressed*: move the whole 3D scene.  
-2 *move mouse under right mouse button pressed*: rotate the whole 3D scene.  
+2 *move mouse under right mouse button pressed*: rotate the whole 3D scene around x/y axis.  
 3 *scroll mouse wheel*: zoom in and out the whole 3D scene.  
 4 *scroll mouse wheel under ctrl pressed*: enlarge and shrink ths points.
+4 *press left/right arrow button*: rotate the whole 3D scene around z axis.
