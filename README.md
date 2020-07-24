@@ -1,8 +1,8 @@
 # Introduction
 DRViewer means **Dense Reconstruction Viewer**, it's basically a lightweight 3D visualization tools based on modern graphic pipeline and C++11, designed for Simultaneous localization and mapping([SLAM](https://en.wikipedia.org/wiki/Simultaneous_localization_and_mapping) in brief) and realtime MVS, capable of viewing structured **3D point cloud**, **camera trajectory** and **multiple input sources**(up to eight).
 <p align = "center">
-<img src="https://github.com/FinleyPan/DRViewer/blob/master/recon.gif" alt="recon_gif" height="355">
-<img src="https://github.com/FinleyPan/DRViewer/blob/master/track.gif" alt="track_gif" height="355">
+<img src="https://github.com/FinleyPan/DRViewer/blob/master/recon.gif" alt="recon_gif" height="300">
+<img src="https://github.com/FinleyPan/DRViewer/blob/master/track.gif" alt="track_gif" height="300">
 </p>
 
 # How to Build && Usage
