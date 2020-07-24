@@ -56,12 +56,12 @@ void UpdatePointCloud(const cv::Mat& image, const cv::Mat& depth, const glm::mat
     }
 }
 
-int main(int argc, char const** argv){
+int main(){
     string assoc_file_path = data_list_path;
     ifstream fin(data_list_path);
     string root = assoc_file_path.substr(0, assoc_file_path.find_last_of("\\/"));
     if(!fin.is_open()){
-        printf("%s does not exist\n", argv[1]);
+        printf("%s does not exist\n", data_list_path);
         return -1;
     }    
     DRViewer viewer(0.5,0.5,8,800,600);
@@ -71,8 +71,8 @@ int main(int argc, char const** argv){
         if(getline(fin, line)){
             istringstream iss(line);
             iss>>depth_rel_path>>img_rel_path;
-            cv::Mat image = cv::imread(root + "/"+img_rel_path, cv::IMREAD_UNCHANGED);
-            cv::Mat depth = cv::imread(root + "/"+depth_rel_path, cv::IMREAD_UNCHANGED);
+            cv::Mat image = cv::imread(root + "/" + img_rel_path, cv::IMREAD_UNCHANGED);
+            cv::Mat depth = cv::imread(root + "/" + depth_rel_path, cv::IMREAD_UNCHANGED);
             float tx,ty,tz,qx,qy,qz,qw;
             iss>>tx>>ty>>tz>>qx>>qy>>qz>>qw;
             glm::mat3 R(glm::quat(qw, qx, qy, qz));
@@ -84,7 +84,7 @@ int main(int argc, char const** argv){
                                  ImageFormat::BGR, DOWN_LEFT2);
             viewer.BindPoinCloudData(pcl.data(), pcl.size());
             viewer.AddCameraPose(qw,qx,qy,qz,tx,ty,tz);
-            viewer.Wait(100);
+            viewer.Wait(200);
         }
         viewer.Render();
     }
