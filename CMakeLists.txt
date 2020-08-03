@@ -29,7 +29,7 @@ if(OpenCV_FOUND)
     add_executable(viewer_demo demo.cpp)
     target_link_libraries(viewer_demo viewer opencv_core opencv_imgcodecs opencv_imgproc)
 else()
-    message(STATUS "OpenCV not found, fail to build the demo")
+    message(WARNING "OpenCV not found, fail to build the demo")
 endif()
 
 install(TARGETS viewer LIBRARY DESTINATION lib)

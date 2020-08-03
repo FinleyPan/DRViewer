@@ -3,7 +3,6 @@
 #include "shader_m.h"
 #include "camera.h"
 #include "widgets.h"
-#define STB_IMAGE_IMPLEMENTATION
 
 #include <unordered_map>
 #include <mutex>
@@ -19,6 +18,11 @@
 ///TODO macos
 #else
   #error "unidentified operation system!"
+#endif
+
+#ifdef __SSE4_1__
+#define USE_SSE
+#include <immintrin.h>
 #endif
 
 namespace std{
@@ -91,52 +95,260 @@ constexpr float kSceneMoveSpeedFactor = 0.00125f;
 constexpr float kPointSizeExpandSpeed = 1.0f;
 constexpr float kMaxPointSize = 10.0f;
 constexpr float kMinPointSize = 1.0f;
+constexpr int kNormalImageWidth = 640;
 
 GLenum GLFormat(ImageFormat format){
     switch(format) {
         case RGB:  return GL_RGB;
         case BGR:  return GL_BGR;
         case RGBA: return GL_RGBA;
-        case BGRA: return GL_BGRA;
+        case BGRA: return GL_BGRA;        
     }
 }
+
+template <typename T>
+struct ImageMemoryDeleter{
+    void operator ()(const T* data){
+        delete [] data;
+    }
+};
+
+//resize image by bilinear interpolation
+void MapPixels(byte* __restrict__ dst, const byte* __restrict__ src, int width, int height,
+               int raw_width, int raw_height, int channels, float factor){
+#ifdef USE_SSE
+    static const __m128i offset_x = _mm_set_epi32(3,2,1,0);
+    const __m128 fs = _mm_set1_ps(factor);
+    const __m128i chs = _mm_set1_epi32(channels);
+    const __m128i widths =_mm_set1_epi32(width * channels);
+    const __m128i strides = _mm_set1_epi32(raw_width * channels);
+
+    const size_t stride = width;
+    const size_t aligned_stride = stride / 4 * 4;
+    int32_t* lxly_buf = (int32_t*)_mm_malloc(sizeof(int32_t) * 4, 16);
+    int32_t* uxly_buf = (int32_t*)_mm_malloc(sizeof(int32_t) * 4, 16);
+    int32_t* lxuy_buf = (int32_t*)_mm_malloc(sizeof(int32_t) * 4, 16);
+    int32_t* uxuy_buf = (int32_t*)_mm_malloc(sizeof(int32_t) * 4, 16);
+    int32_t* xys_buf = (int32_t*)_mm_malloc(sizeof(int32_t) * 4, 16);
+    float* res_buf = (float*)_mm_malloc(sizeof(float) * 4, 16);
+#endif
+    for(int y = 0; y < height; y++){
+        int x = 0;
+#ifdef USE_SSE //accelerate computation using SSE
+        __m128i yss = _mm_set1_epi32(y);
+        __m128 ysd = _mm_mul_ps(_mm_cvtepi32_ps(yss), fs);
+        __m128i ws = _mm_mullo_epi32(yss, widths);
+
+        __m128 ly = _mm_round_ps(ysd, _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC);
+        __m128 uy = _mm_add_ps(ly, _mm_set1_ps(1.0f));
+        __m128 ucy = _mm_sub_ps(uy, ysd);
+        __m128 cly = _mm_sub_ps(ysd, ly);
+        __m128i lyi = _mm_cvtps_epi32(ly);
+        __m128i uyi = _mm_cvtps_epi32(uy);
+        __m128i wl = _mm_mullo_epi32(strides, lyi);
+        __m128i wu = _mm_mullo_epi32(strides, uyi);
+        for(; x < aligned_stride; x += 4){
+            __m128i xss = _mm_add_epi32(_mm_set1_epi32(x), offset_x);
+            __m128i xys = _mm_add_epi32(ws, _mm_mullo_epi32(xss, chs));
+            __m128 xsd = _mm_mul_ps(_mm_cvtepi32_ps(xss), fs);
+
+            __m128 lx = _mm_round_ps(xsd, _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC);
+            __m128 ux = _mm_add_ps(lx, _mm_set1_ps(1.0f));
+            __m128 ucx = _mm_sub_ps(ux, xsd);
+            __m128 clx = _mm_sub_ps(xsd, lx);
+            __m128i lxi = _mm_cvtps_epi32(lx);
+            __m128i uxi = _mm_cvtps_epi32(ux);
+
+            __m128i lxlyi = _mm_add_epi32(wl, _mm_mullo_epi32(lxi, chs));
+            __m128i uxlyi = _mm_add_epi32(wl, _mm_mullo_epi32(uxi, chs));
+            __m128i lxuyi = _mm_add_epi32(wu, _mm_mullo_epi32(lxi, chs));
+            __m128i uxuyi = _mm_add_epi32(wu, _mm_mullo_epi32(uxi, chs));
+
+            for(int c=0; c < channels; c++){
+                //gather
+                __m128i c4 = _mm_set1_epi32(c);
+                _mm_store_si128((__m128i*)lxly_buf, _mm_add_epi32(lxlyi, c4));
+                _mm_store_si128((__m128i*)uxly_buf, _mm_add_epi32(uxlyi, c4));
+                _mm_store_si128((__m128i*)lxuy_buf, _mm_add_epi32(lxuyi, c4));
+                _mm_store_si128((__m128i*)uxuy_buf, _mm_add_epi32(uxuyi, c4));
+                __m128 intensities_lxly = _mm_set_ps(src[lxly_buf[3]],src[lxly_buf[2]],src[lxly_buf[1]],src[lxly_buf[0]]);
+                __m128 intensities_uxly = _mm_set_ps(src[uxly_buf[3]],src[uxly_buf[2]],src[uxly_buf[1]],src[uxly_buf[0]]);
+                __m128 intensities_lxuy = _mm_set_ps(src[lxuy_buf[3]],src[lxuy_buf[2]],src[lxuy_buf[1]],src[lxuy_buf[0]]);
+                __m128 intensities_uxuy = _mm_set_ps(src[uxuy_buf[3]],src[uxuy_buf[2]],src[uxuy_buf[1]],src[uxuy_buf[0]]);
+
+                __m128 ll = _mm_mul_ps(intensities_lxly, _mm_mul_ps(ucx, ucy));
+                __m128 ul = _mm_mul_ps(intensities_uxly, _mm_mul_ps(clx, ucy));
+                __m128 lu = _mm_mul_ps(intensities_lxuy, _mm_mul_ps(ucx, cly));
+                __m128 uu = _mm_mul_ps(intensities_uxuy, _mm_mul_ps(clx, cly));
+                __m128 res = _mm_add_ps(_mm_add_ps(ll, ul),_mm_add_ps(lu, uu));
+
+                //scatter
+                _mm_store_si128((__m128i*)xys_buf, _mm_add_epi32(xys, c4));
+                _mm_store_ps(res_buf, res);
+                dst[xys_buf[0]] = (byte)res_buf[0];
+                dst[xys_buf[1]] = (byte)res_buf[1];
+                dst[xys_buf[2]] = (byte)res_buf[2];
+                dst[xys_buf[3]] = (byte)res_buf[3];
+            }
+        }
+#endif
+
+        for(; x < width; x++){
+            float px = factor * x;
+            float py = factor * y;
+            int ix = (int)px;
+            int iy = (int)py;
+            float dx = px - (float)ix;
+            float dy = py - (float)iy;
+            for(int c = 0; c < channels; c++)
+                dst[(y * width + x)*channels + c] = (1 - dx)*(1 - dy)*src[(iy*raw_width + ix) * channels + c] +
+                                                    dx*(1 - dy)*src[(iy*raw_width + ix + 1) * channels + c] +
+                                                    dy*(1 - dx)*src[((iy + 1)*raw_width + ix) * channels + c] +
+                                                    dx*dy*src[((iy+1)*raw_width + ix + 1) * channels + c];
+        }
+    }
+
+#ifdef USE_SSE
+    _mm_free(lxly_buf);
+    _mm_free(uxly_buf);
+    _mm_free(lxuy_buf);
+    _mm_free(uxuy_buf);
+    _mm_free(xys_buf);
+    _mm_free(res_buf);
+#endif
+}
+
+byte* AllocateImageMemory(const byte* raw_data, int& width, int& height,
+                          ImageFormat format, bool norm_scale){
+    byte* data = nullptr;
+    int channels = format > 1? 4 : 3;
+    size_t num_bytes = 0;
+    if(norm_scale && width != kNormalImageWidth){
+        int raw_width = width;
+        int raw_height = height;
+        if(width > kNormalImageWidth){
+            width = kNormalImageWidth;
+        }else{
+            //scale width to highest power of 2 less than the original
+            width = std::pow(2.0f, (int)std::log2(width));
+        }
+
+        float factor = (float)raw_width / width;
+        height = 1.0f / factor * height;
+        num_bytes = width * height * channels;
+        data = new byte[num_bytes];
+        MapPixels(data, raw_data, width, height, raw_width, raw_height, channels, factor);
+    }else{
+        num_bytes = width * height * channels;
+        data = new byte[num_bytes];
+        memcpy(data, raw_data, num_bytes);
+    }
+    return data;
+}
+
+//a thin wrapper of image buffer, manually deallocating memory(i.e. delete [] data) is prohibitive
+struct Image{
+public:
+    int width, height;
+    ImageFormat format;
+    byte* data;
+
+    Image(int _w=0, int _h=0, ImageFormat _f=RGB) :
+        width(_w), height(_h), format(_f), data(nullptr) {}
+    //norm sacle means whether or not scale image to a normal size for rendering;
+    //set it true when image displayed abnormally or the image is too large
+    Image(const byte* _data, int _width, int _height, ImageFormat _format,
+          bool norm_scale = false){
+        if(_data == nullptr)
+            return;
+        width = _width;
+        height = _height;
+        format = _format;
+        Allocate(_data, norm_scale);
+    }
+
+    void Allocate(const byte* _data, bool norm_scale){
+        data = AllocateImageMemory(_data, width, height, format, norm_scale);
+        smem.reset(data, ImageMemoryDeleter<byte>());
+    }
+
+    Image(const Image&) = default;
+    Image(Image&&) noexcept = default;
+    Image& operator=(const Image& rhs){
+        if(this != &rhs){
+             width = rhs.width;
+             height = rhs.height;
+             format = rhs.format;
+             data = rhs.data;
+             smem = rhs.smem;
+        }
+        return *this;
+    }
+
+    Image& operator=(Image&& rhs) noexcept{
+        if(this != &rhs){
+             width = rhs.width;
+             height = rhs.height;
+             format = rhs.format;
+             data = rhs.data;
+             smem = std::move(rhs.smem);
+
+             rhs.width = 0;
+             rhs.height = 0;
+             rhs.data = nullptr;
+        }
+        return *this;
+    }
+
+private:
+    std::shared_ptr<byte> smem;
+};
+
 
 struct SubWindow{
     //(x,y) represents the downleft corner of the sub-window
     int x, y;
     int w, h;
-    int img_w, img_h;
-    ImageFormat format;
     float aspect_ratio;
-    std::unique_ptr<byte> data;
+    Image image;
 
-    SubWindow(SubWindowPos pos, int parent_width, int parent_height, int _img_w,
-              int _img_h, ImageFormat f): img_w(_img_w), img_h(_img_h), format(f){
-        aspect_ratio = (float)img_w / img_h;
-        size_t area = img_h * img_w;
-        if(area > 0){
-            data.reset(new byte[area * (f > 1? 4 : 3)]);
+    SubWindow(SubWindowPos pos, const byte* _data, int parent_width, int parent_height,
+              int _img_w, int _img_h, ImageFormat f): image(_img_w, _img_h, f){
+        aspect_ratio = (float)_img_w / _img_h;
+        size_t area = _img_h * _img_w;
+        if(_data != nullptr && area > 0){
+            bool norm_scale = image.width % 2 != 0 || image.width > kNormalImageWidth;
+            image.Allocate(_data, norm_scale);
         }
         Resize(pos, parent_width, parent_height);
     }
 
-    SubWindow(const SubWindow& rhs): x(rhs.x), y(rhs.y), img_w(rhs.img_w),
-        img_h(rhs.img_h),format(rhs.format), aspect_ratio(rhs.aspect_ratio){
-        size_t num_bytes = img_h * img_w * (format > 1? 4 : 3);
-        data.reset(new byte[num_bytes]);
-        memcpy(data.get(), rhs.data.get(), num_bytes);
-    }
+    SubWindow(const SubWindow& rhs) = default;
+    SubWindow(SubWindow&& rhs) noexcept = default;
 
     SubWindow& operator=(const SubWindow& rhs){
         if(this != &rhs){
-            size_t num_bytes = img_h * img_w * (format > 1? 4 : 3);
-            memcpy(data.get(), rhs.data.get(), num_bytes);
+            x= rhs.x;
+            y= rhs.y;
+            aspect_ratio = rhs.aspect_ratio;
+            image = rhs.image;
         }
         return *this;
     }
 
-    SubWindow(SubWindow&& rhs) = default;
-    SubWindow& operator=(SubWindow&& rhs) = default;
+    SubWindow& operator=(SubWindow&& rhs) noexcept{
+        if(this != &rhs){
+            x= rhs.x;
+            y= rhs.y;
+            aspect_ratio = rhs.aspect_ratio;
+            image = std::move(rhs.image);
+
+            rhs.x = 0;
+            rhs.y = 0;
+            rhs.aspect_ratio = 0.0f;
+        }
+        return *this;
+    }
 
 
     void Resize(SubWindowPos pos, int parent_width, int parent_height){
@@ -157,7 +369,7 @@ struct SubWindow{
 
 }
 
-/*--------------class definitions---------------------*/
+/*--------------DRViewer class definitions---------------------*/
 class ImplDRViewerBase{
 public:
     ImplDRViewerBase(float x,float y,float z, int width, int height, GraphicAPI api):
@@ -243,18 +455,20 @@ public:
 
     void BindImageData(const byte* data, int w, int h, ImageFormat f, SubWindowPos sub_win){
         std::lock_guard<std::mutex> lck(mtx_);
+        if(data == nullptr || w == 0 || h == 0)
+            return;
         auto iter = sub_windows_.find(sub_win);
         if(iter != sub_windows_.end()){
-            if(w != iter->second.img_w || h != iter->second.img_h){
-                iter->second = std::move(SubWindow(iter->first, width_, height_, w, h, f));
-            }
-            memcpy(iter->second.data.get(), data, w * h * (f > 1? 4 : 3));
+            if(w != iter->second.image.width || h != iter->second.image.height)
+                iter->second = std::move(SubWindow(iter->first, data,
+                                         width_, height_, w, h, f));
+            else
+                memcpy(iter->second.image.data, data, w * h * ((f > 1) ? 4 : 3));
         }else{
-            auto ret = sub_windows_.insert(std::make_pair(sub_win, SubWindow(
-                                           sub_win, width_, height_, w, h, f)));
-            CreateTexture(sub_win);
-            memcpy(ret.first->second.data.get(), data, w * h * (f > 1? 4 : 3));
-        }
+            sub_windows_.insert(std::make_pair(sub_win, SubWindow(
+                         sub_win, data, width_, height_, w, h, f)));
+            CreateTexture(sub_win);            
+        }        
     }
 
     void AddCameraPose(glm::quat& rotation, const glm::vec3& position,
@@ -558,9 +772,10 @@ private:
         for(auto it = sub_windows_.begin(); it != sub_windows_.end(); ++it){
             SubWindowPos pos = it->first;
             const SubWindow& sub_win = it->second;
+            const Image& image = sub_win.image;
             glBindTexture(GL_TEXTURE_2D, *textures_[pos]);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, sub_win.img_w, sub_win.img_h, 0,
-                        GLFormat(sub_win.format), GL_UNSIGNED_BYTE, sub_win.data.get());
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, image.width, image.height, 0,
+                         GLFormat(image.format), GL_UNSIGNED_BYTE, image.data);
             glGenerateMipmap(GL_TEXTURE_2D);
             glViewport(sub_win.x, sub_win.y, sub_win.w, sub_win.h);
 
@@ -704,7 +919,7 @@ void ImplDRViewerOGL::CallbackHelper::KeyboardCallback(GLFWwindow *win, int key,
         for(int i=0; i<3; i++)
             handle_->model_[i] = tmp[i];
     }else if(glfwGetKey(win, GLFW_KEY_RIGHT) == GLFW_PRESS){
-        glm::mat4 r3 = glm::rotate(glm::mat4(1.0f), glm::radians(kAngleSpeedZAxis), glm::vec3(0,0,1.0f));
+        glm::mat4 r3 = glm::rotate(glm::mat4(1.0f), glm::radians(-kAngleSpeedZAxis), glm::vec3(0,0,1.0f));
         glm::mat4 tmp = r3 * handle_->model_;
         for(int i=0; i<3; i++)
             handle_->model_[i] = tmp[i];
@@ -717,7 +932,7 @@ public:
                     const char* frag_shader_src, const char* win_name, GraphicAPI api) :
         ImplDRViewerBase(x, y, z, width, height, api) {}
     virtual bool ShouldExit() const override { return true;}
-    virtual void CreateTexture(SubWindowPos pos) override {};
+    virtual void CreateTexture(SubWindowPos pos) override {}
     void Render() override{}
 
     virtual ~ImplDRViewerVLK(){}
@@ -730,7 +945,7 @@ public:
                     const char* frag_shader_src, const char* win_name, GraphicAPI api) :
         ImplDRViewerBase(x, y, z, width, height, api) {}
     virtual bool ShouldExit() const override { return true;}
-    virtual void CreateTexture(SubWindowPos pos) override {};
+    virtual void CreateTexture(SubWindowPos pos) override {}
     void Render() override{}
 
     virtual ~ImplDRViewerMTL(){}

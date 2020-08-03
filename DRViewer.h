@@ -18,7 +18,7 @@ enum GraphicAPI{
 };
 
 enum ImageFormat{
-    RGB = 0, BGR = 1, RGBA = 2, BGRA = 3
+    RGB = 0, BGR = 1, RGBA = 3, BGRA = 4
 };
 
 enum SubWindowPos{  //---------------------

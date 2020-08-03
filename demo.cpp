@@ -63,9 +63,9 @@ int main(){
     if(!fin.is_open()){
         printf("%s does not exist\n", data_list_path);
         return -1;
-    }    
+    }
     DRViewer viewer(0.5,0.5,8,800,600);
-    std::vector<Vertex> pcl;
+    std::vector<Vertex> pcl;    
     while(!viewer.ShouldExit()){
         std::string line,depth_rel_path, img_rel_path;
         if(getline(fin, line)){
